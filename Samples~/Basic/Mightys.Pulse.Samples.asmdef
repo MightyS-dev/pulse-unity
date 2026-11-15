@@ -1,0 +1,5 @@
+{
+  "name": "Mightys.Pulse.Samples",
+  "rootNamespace": "Mightys.Pulse.Samples",
+  "references": [ "Mightys.Pulse" ]
+}

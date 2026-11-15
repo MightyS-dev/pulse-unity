@@ -1,0 +1,7 @@
+{
+  "name": "Mightys.Pulse",
+  "rootNamespace": "Mightys.Pulse",
+  "references": [],
+  "autoReferenced": true,
+  "allowUnsafeCode": false
+}
