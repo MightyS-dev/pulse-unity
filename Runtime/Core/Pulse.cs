@@ -20,8 +20,8 @@ namespace Mightys.Pulse
         internal static readonly TimeSpan FinalSaveTimeout = TimeSpan.FromSeconds(2);
 
         internal static void InstallPlatform(Func<string, PulseOptions, bool?, PulseClient> factory,
-            bool debugBuild, Action<string> logger, Func<bool> storedOptOut = null)
-        { PulseInfo.DebugBuild = debugBuild; runtime.InstallPlatform(factory, logger, storedOptOut); }
+            bool debugBuild, Action<string> logger, Func<bool> storedOptOut = null, Func<string> installHash = null, Action forgetInstall = null)
+        { PulseInfo.DebugBuild = debugBuild; runtime.InstallPlatform(factory, logger, storedOptOut, installHash, forgetInstall); }
         internal static Task FlushInBackground() => runtime.FlushInBackground(TimeSpan.FromMinutes(1));
         internal static void ReleaseFlushWaiters() => runtime.ReleaseFlushWaiters();
         // Bounded final save for application quit. Saving runs on the thread pool and never needs the main thread.
@@ -44,6 +44,8 @@ namespace Mightys.Pulse
         private readonly IClock clock;
         private Func<string, PulseOptions, bool?, PulseClient> factory;
         private Func<bool> storedOptOutReader;
+        private Func<string> installIdHash;
+        private Action forgetInstallId;
         private PulseClient client;
         private Task backgroundFlush;
         private string appKey, userHash, session = Guid.NewGuid().ToString("N");
@@ -54,9 +56,10 @@ namespace Mightys.Pulse
         internal PulseRuntime(IClock clock) { this.clock = clock; }
 
         internal void InstallPlatform(Func<string, PulseOptions, bool?, PulseClient> platform, Action<string> log,
-            Func<bool> storedPreference = null)
+            Func<bool> storedPreference = null, Func<string> installHash = null, Action forgetInstall = null)
         {
-            try { lock (gate) { factory = platform; logger = log; storedOptOutReader = storedPreference; Start(); } }
+            try { lock (gate) { factory = platform; logger = log; storedOptOutReader = storedPreference;
+                installIdHash = installHash; forgetInstallId = forgetInstall; Start(); } }
             catch (Exception) { lock (gate) { if (client == null) appKey = null; } Warn("Platform initialization failed."); }
         }
         internal void Initialize(string key, PulseOptions requested = null)
@@ -78,7 +81,18 @@ namespace Mightys.Pulse
         {
             if (client != null || appKey == null || factory == null) return;
             client = factory(appKey, options, optOut);
-            while (beforeInitialize.Count > 0) client.Enqueue(beforeInitialize.Dequeue());
+            while (beforeInitialize.Count > 0)
+            {
+                var queued = beforeInitialize.Dequeue();
+                if (queued.Anonymous) queued.UserHash = AnonymousHash();
+                client.Enqueue(queued);
+            }
+        }
+        // Without setUser, signals carry the hash of the anonymous install id, once the platform can provide it.
+        private string AnonymousHash()
+        {
+            try { return client == null ? null : installIdHash?.Invoke(); }
+            catch (Exception) { return null; }
         }
         internal void Track(string type, double? value = null, IDictionary<string, object> props = null)
         {
@@ -90,8 +104,9 @@ namespace Mightys.Pulse
                     var now = clock.UtcNow;
                     if (now - lastActivity >= TimeSpan.FromMinutes(30)) session = Guid.NewGuid().ToString("N");
                     lastActivity = now;
-                    var input = SignalJson.Create(type, value, props, now, session, userHash, Warn);
+                    var input = SignalJson.Create(type, value, props, now, session, userHash ?? AnonymousHash(), Warn);
                     if (input == null) return;
+                    input.Anonymous = userHash == null;
                     if (client != null) client.Enqueue(input);
                     else { if (beforeInitialize.Count == 100) beforeInitialize.Dequeue(); beforeInitialize.Enqueue(input); }
                 }
@@ -125,6 +140,7 @@ namespace Mightys.Pulse
                         optOut = value; userHash = null;
                         if (value) { beforeInitialize.Clear(); session = Guid.NewGuid().ToString("N"); lastActivity = DateTimeOffset.MinValue; }
                         client?.SetOptOut(value);
+                        if (value) { try { forgetInstallId?.Invoke(); } catch (Exception) { } }
                     }
                 }
                 catch (Exception) { Warn("Privacy preference update failed."); }

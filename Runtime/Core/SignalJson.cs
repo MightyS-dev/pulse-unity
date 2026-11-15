@@ -11,6 +11,8 @@ namespace Mightys.Pulse
         internal DateTimeOffset Timestamp;
         internal string Type, PropsJson, SessionId, UserHash;
         internal double? Value;
+        // True when no user id was set at capture, so the anonymous install id hash applies.
+        internal bool Anonymous;
     }
 
     internal static class SignalJson

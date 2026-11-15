@@ -13,7 +13,7 @@ own startup code.
 In Unity, open Window > Package Manager > + > Add package from git URL and enter:
 
 ```text
-https://github.com/MightyS-dev/pulse-unity.git#0.9.0
+https://github.com/MightyS-dev/pulse-unity.git#0.9.2
 ```
 
 The part after `#` pins the version; change it to move to a newer release. Use Unity 2022.3 LTS or newer and the
@@ -28,8 +28,10 @@ using Mightys.Pulse;
 Pulse.Initialize("YOUR_APP_KEY");           // the app key from your Pulse dashboard
 Pulse.Track("level_complete", 42);          // a named signal with an optional number
 Pulse.Track("purchase", 4.99, new Dictionary<string, object> { ["sku"] = "gems_100" });
-await Pulse.Flush();                        // optional: send what is queued now
 ```
+
+That is all: users are counted without any further setup. Optionally, call `Pulse.SetUser("your-user-id")` to use your
+own user id instead of the anonymous install id.
 
 Call `Initialize` once from your startup script. `Track` is thread safe. Public calls never throw into your game and
 never wait for disk or network. To try it without writing code, import the Basic sample from Package Manager.
@@ -42,8 +44,13 @@ Sent:
   be strings, finite numbers and booleans (sent as `"true"` or `"false"`); other values are dropped.
 - A random session id that rotates after 30 minutes without a signal.
 - Platform, OS name and version, app version and build number, device model, locale, and the SDK name and version.
-- An optional user id. `Pulse.SetUser("id")` hashes it with SHA-256 on the device; the raw id is never stored or sent.
-  The user id is not kept across restarts, so call `SetUser` again at startup.
+- A user hash: the SHA-256 hash of the anonymous install id (below), or of your own user id after
+  `Pulse.SetUser("id")`. The raw id is never sent. Your user id is not kept across restarts, so call `SetUser` again at
+  startup; `SetUser(null)` goes back to the anonymous install id.
+
+Anonymous install id: a random id made on the first start of the app. It is stored only in the app's own storage, is
+deleted when the app is uninstalled, and is replaced by a new one after opt-out. It is sent only as a SHA-256 hash. It
+is not derived from any device or advertising identifier and is not shared between apps.
 
 Never sent: an advertising id, a device identifier, the device's name, a location, contacts, or automatic screen or
 gameplay events.
@@ -118,10 +125,11 @@ The offline queue is stored under `Application.persistentDataPath`, in the folde
 ## Opt-out
 
 ```csharp
-Pulse.OptOut = true;   // stops collection, clears the queue, forgets the user id
+Pulse.OptOut = true;   // stops collection, clears the queue, forgets the user id and the install id
 ```
 
-The choice is remembered across restarts. Set it back to `false` to resume, and call `SetUser` again if you use it.
+The choice is remembered across restarts. Set it back to `false` to resume: a new anonymous install id is made at the
+next signal. Call `SetUser` again if you use it.
 
 ## Licence
 
@@ -133,6 +141,6 @@ MIT. See `LICENSE.md`.
 | --- | --- |
 | `Pulse.Initialize(appKey, options)` | Starts the SDK. Call once; the options are optional. |
 | `Pulse.Track(type, value, props)` | Queues a signal. `value` and `props` are optional. |
-| `Pulse.SetUser(id)` | Attaches the SHA-256 hash of `id` to later signals. Pass `null` to stop. |
+| `Pulse.SetUser(id)` | Optional. Uses the SHA-256 hash of your `id` instead of the anonymous install id. Pass `null` to go back. |
 | `Pulse.Flush(cancellationToken)` | Sends what is queued now and returns a task. |
 | `Pulse.OptOut` | Gets or sets the saved opt-out choice. |

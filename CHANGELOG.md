@@ -4,6 +4,12 @@ All notable changes to the Pulse Unity SDK (`dev.mightys.pulse`) are listed here
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-11-15
+
+### Added
+
+- Users are counted without any setup: the SDK sends a random anonymous install id (hashed) until you call `Pulse.SetUser`.
+
 ## [0.9.0] - 2026-11-15
 
 Initial public release.

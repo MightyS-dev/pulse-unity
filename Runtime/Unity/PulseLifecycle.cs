@@ -25,9 +25,13 @@ namespace Mightys.Pulse
                 var environment = new UnityEnvironmentInfo();
                 var storage = new PersistentDataPathStorage(Application.persistentDataPath);
                 Action<string> log = message => context.Post(_ => UnityEngine.Debug.LogWarning("[Pulse] " + message), null);
+                // Anonymous install id next to the offline queue, read or created now (unless opted out) so the first
+                // signals carry its hash without waiting. Only its SHA-256 hash is sent; opt-out forgets it.
+                var installId = new InstallId(() => storage);
+                try { if (!PulseClient.ReadStoredOptOut(storage)) installId.Prime(); } catch (Exception) { }
                 Pulse.InstallPlatform((key, options, optOut) => new PulseClient(key, options, new SystemClock(),
                     new UnityTransport(context, Pulse.ReleaseFlushWaiters), storage, environment, log, initialOptOut: optOut),
-                    UnityEngine.Debug.isDebugBuild, log, () => PulseClient.ReadStoredOptOut(storage));
+                    UnityEngine.Debug.isDebugBuild, log, () => PulseClient.ReadStoredOptOut(storage), installId.Hash, installId.Forget);
                 var host = new GameObject(PulseInfo.DisplayName) { hideFlags = HideFlags.HideInHierarchy };
                 DontDestroyOnLoad(host); host.AddComponent<PulseLifecycle>();
             }
