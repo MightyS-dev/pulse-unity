@@ -25,7 +25,15 @@ namespace Mightys.Pulse
         private readonly IStorage storage;
         private readonly PulseOptions options;
         private readonly string appKey, system;
-        private readonly Uri url;
+        private readonly HashSet<string> systemKeys = new HashSet<string>(StringComparer.Ordinal);
+        private readonly IExtraSystemFields extras;
+        private readonly UsageTracker usage;
+        private readonly string appVersion, appBuild;
+        private readonly Uri url, configUrl;
+        private readonly SignalPolicy policy;
+        private readonly object configGate = new object();
+        private bool configRequested;
+        private long configEpoch;
         private readonly Action<string> logger;
         private readonly Func<double> random;
         private readonly List<string> persistedIds = new List<string>();
@@ -41,17 +49,27 @@ namespace Mightys.Pulse
         private string PreferenceName => "opt-out";
         internal bool IsOptOut { get { lock (gate) return optOut; } }
         internal int Count { get { lock (gate) return queue.Count; } }
+        /// <summary>What the cached portal settings and the options in code allow, fixed for this run.</summary>
+        internal SignalPolicy Policy => policy;
+        /// <summary>The settings request of this launch, or a completed task when none was started. Used by tests.</summary>
+        internal Task ConfigFetch { get; private set; } = Task.CompletedTask;
 
         internal PulseClient(string appKey, PulseOptions options, IClock clock, ITransport transport,
             IStorage storage, IEnvironmentInfo environment, Action<string> logger = null,
-            bool runWorker = true, Func<double> random = null, bool? initialOptOut = null)
+            bool runWorker = true, Func<double> random = null, bool? initialOptOut = null, UsageTracker usage = null)
         {
             this.appKey = appKey; this.options = options.Snapshot(); this.clock = clock;
             this.options.Debug = options.Debug;
             this.transport = transport; this.storage = storage; this.logger = logger;
             this.random = random ?? new Random().NextDouble;
-            system = SignalJson.SystemJson(environment, this.options);
+            // The cached portal settings are read once and hold for the whole run; a fetch in this run applies at the next launch.
+            var cached = RemoteConfig.Load(storage);
+            policy = new SignalPolicy(this.options, cached);
+            system = SignalJson.SystemJson(environment, this.options, systemKeys, cached.HiddenKeys());
+            extras = environment as IExtraSystemFields; this.usage = usage;
+            appVersion = this.options.AppVersion ?? environment.AppVersion ?? ""; appBuild = environment.AppBuildNumber ?? "";
             url = new Uri(this.options.Host + "/api/v1/signals");
+            configUrl = new Uri(this.options.Host + "/api/v1/config");
             QueueName = "queue-" + SignalJson.Hash(appKey) + ".bin";
             interval = this.options.FlushIntervalSeconds;
             nextFlush = clock.UtcNow.AddSeconds(interval);
@@ -78,16 +96,42 @@ namespace Mightys.Pulse
         internal void Enqueue(SignalInput input)
         {
             if (input == null) return;
-            var json = SignalJson.Serialize(input, system, options.Debug);
+            // The platform callback runs outside the client lock; it must be cheap.
+            IReadOnlyDictionary<string, string> dynamicFields = null;
+            try { dynamicFields = extras?.DynamicFields(); } catch (Exception) { Warn("Platform fields unavailable."); }
             lock (gate)
             {
                 if (optOut || lifetime.IsCancellationRequested) return;
-                queue.Add(new QueueEntry { Id = Guid.NewGuid().ToString("N"), Json = json,
-                    Timestamp = input.Timestamp, Sequence = ++sequence });
+                var observation = usage?.Observe(input.SessionId, input.Timestamp, appVersion, appBuild, policy.Allows("pulse.app_updated"));
+                var systemJson = observation == null && dynamicFields == null ? system :
+                    SignalJson.SystemJsonFor(system, systemKeys, dynamicFields, observation?.Fields);
+                if (observation != null)
+                    foreach (var auto in observation.Signals)
+                    {
+                        if (!policy.Allows(auto.Type)) continue;
+                        var own = new SignalInput { Type = auto.Type, PropsJson = auto.PropsJson ?? "{}", Timestamp = NextStamp(input.Timestamp),
+                            SessionId = input.SessionId, UserHash = input.UserHash };
+                        Add(own, SignalJson.Serialize(own, systemJson, options.Debug));
+                    }
+                if (policy.Allows(input.Type))
+                { input.Timestamp = NextStamp(input.Timestamp); Add(input, SignalJson.Serialize(input, systemJson, options.Debug)); }
                 Prune();
             }
             Pulse();
         }
+
+        // Strictly increasing capture timestamps at millisecond resolution: the later of the clock reading and the
+        // previous timestamp plus one millisecond. Called under the client lock in storing order, automatic signals first.
+        private long lastStampMillis = long.MinValue / 2;
+        private DateTimeOffset NextStamp(DateTimeOffset reading)
+        {
+            var now = reading.UtcTicks / TimeSpan.TicksPerMillisecond;
+            lastStampMillis = now > lastStampMillis ? now : lastStampMillis + 1;
+            return new DateTimeOffset(lastStampMillis * TimeSpan.TicksPerMillisecond, TimeSpan.Zero);
+        }
+
+        private void Add(SignalInput input, string json) =>
+            queue.Add(new QueueEntry { Id = Guid.NewGuid().ToString("N"), Json = json, Timestamp = input.Timestamp, Sequence = ++sequence });
 
         internal void SetOptOut(bool value)
         {
@@ -96,11 +140,70 @@ namespace Mightys.Pulse
                 optOut = value; preferenceExplicit = true; preferenceDirty = true; preferenceVersion++;
                 if (value)
                 {
+                    configEpoch++; configRequested = false; ForgetConfig();
+                    try { usage?.Forget(); } catch (Exception) { }
                     queue.Clear();
                     try { activeRequest?.Cancel(); } catch (Exception) { }
                 }
             }
+            if (!value) StartConfigFetch();
             Pulse();
+        }
+
+        // Opt-out deletes the cached settings with the rest. The delete runs on the thread pool, never on the public call.
+        private void ForgetConfig() =>
+            Task.Run(() => { lock (configGate) { try { storage.Delete(RemoteConfig.FileName); } catch (Exception) { } } });
+
+        /// <summary>Starts the one settings request of this launch in the background. It never delays Track, Flush or the queue worker.
+        /// Does nothing while opted out, after the first call, or after stop.</summary>
+        internal Task StartConfigFetch()
+        {
+            long epoch;
+            lock (gate)
+            {
+                if (configRequested || optOut || lifetime.IsCancellationRequested) return ConfigFetch;
+                configRequested = true; epoch = configEpoch;
+            }
+            var task = Task.Run(() => FetchConfigAsync(epoch));
+            lock (gate) ConfigFetch = task;
+            return task;
+        }
+
+        private async Task FetchConfigAsync(long epoch)
+        {
+            try
+            {
+                var request = TransportRequest.ForGet(configUrl, appKey, policy.Config.ETag);
+                TransportResponse response;
+                using (var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token))
+                {
+                    cancellation.CancelAfter(TimeSpan.FromSeconds(request.TimeoutSeconds));
+                    var sending = transport.SendAsync(request, cancellation.Token) ?? Task.FromResult(new TransportResponse(0));
+                    // A transport that ignores cancellation must not keep this task alive past the timeout.
+                    var canceled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    using (cancellation.Token.Register(() => canceled.TrySetResult(true)))
+                    {
+                        if (await Task.WhenAny(sending, canceled.Task).ConfigureAwait(false) != sending)
+                        {
+                            _ = sending.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
+                                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                            return;
+                        }
+                        response = await sending.ConfigureAwait(false);
+                    }
+                }
+                // 304, 401, any other status and a failed request keep the cache.
+                if (response == null || response.StatusCode != 200) return;
+                var parsed = RemoteConfig.Parse(response.Body);
+                if (parsed == null) { Warn("Settings response not understood; cached settings kept."); return; }
+                lock (configGate)
+                {
+                    lock (gate) { if (optOut || epoch != configEpoch || lifetime.IsCancellationRequested) return; }
+                    try { storage.Replace(RemoteConfig.FileName, Encoding.UTF8.GetBytes(response.Body)); }
+                    catch (Exception) { Warn("Settings could not be saved."); }
+                }
+            }
+            catch (Exception) { Warn("Settings request failed; cached settings kept."); }
         }
 
         internal Task FlushAsync(CancellationToken cancellationToken = default)

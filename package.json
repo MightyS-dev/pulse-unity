@@ -1,6 +1,6 @@
 {
   "name": "dev.mightys.pulse",
-  "version": "0.9.2",
+  "version": "0.9.4",
   "displayName": "MightyS Pulse",
   "description": "Privacy-first analytics for Unity games and apps. Send named events with one call and see them in the MightyS Pulse dashboard. No advertising or device identifiers, an offline queue that survives restarts, built-in opt-out, no external dependencies.",
   "unity": "2022.3",

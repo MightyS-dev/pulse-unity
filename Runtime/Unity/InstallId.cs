@@ -5,6 +5,19 @@ using System.Threading.Tasks;
 
 namespace Mightys.Pulse
 {
+    internal static class UnityUsage
+    {
+        // Session statistics and the automatic signals (new install, app updated, session started) for one client. The
+        // usage file is read now unless the user opted out, so the first signal does not wait for storage. A new install is
+        // the install id being created by this process.
+        internal static UsageTracker Start(IStorage storage, InstallId installId, bool? optOut, Func<DateTimeOffset, string> localDate = null)
+        {
+            var usage = new UsageTracker(() => storage, localDate, installId.ConsumeCreated);
+            try { if (optOut != true && !PulseClient.ReadStoredOptOut(storage)) usage.Prime(); } catch (Exception) { }
+            return usage;
+        }
+    }
+
     // Random anonymous install id: 16 secure random bytes as 32 lowercase hex characters, kept in one small file next
     // to the offline queue. Only its SHA-256 hash is ever sent. It is read once at start, created when missing, and
     // forgotten on opt-out. Storage trouble never throws: the id then lives in memory for this process and writing is
@@ -15,7 +28,7 @@ namespace Mightys.Pulse
         private readonly object gate = new object();
         private readonly Func<IStorage> storage;
         private string id;
-        private bool resolved;
+        private bool resolved, createdNow;
         private Task idle = Task.CompletedTask;
 
         internal InstallId(Func<IStorage> storage) { this.storage = storage; }
@@ -39,12 +52,22 @@ namespace Mightys.Pulse
             }
         }
 
+        /// <summary>True once when this process created the id (nothing was stored before), then false until a new id is created.</summary>
+        internal bool ConsumeCreated()
+        {
+            lock (gate)
+            {
+                if (id == null) id = Resolve(false);
+                var result = createdNow; createdNow = false; return result;
+            }
+        }
+
         /// <summary>Opt-out: forgets the id and deletes it. The next signal after opt-out is turned off gets a new one.</summary>
         internal void Forget()
         {
             lock (gate)
             {
-                id = null; resolved = true; // nothing to read back; the next Hash creates a new id
+                id = null; resolved = true; createdNow = false; // nothing to read back; the next Hash creates a new id
                 Chain(() => { try { storage().Delete(FileName); } catch (Exception) { } });
             }
         }
@@ -57,7 +80,7 @@ namespace Mightys.Pulse
                 try { var stored = Parse(storage().Read(FileName)); if (stored != null) return stored; }
                 catch (Exception) { }
             }
-            var created = Create();
+            var created = Create(); createdNow = true;
             if (writeNow) Write(created);
             else Chain(() => { lock (gate) { if (id != created) return; } Write(created); });
             return created;

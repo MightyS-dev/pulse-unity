@@ -11,10 +11,16 @@ namespace Mightys.Pulse
         public static void Initialize(string appKey, PulseOptions options = null) => runtime.Initialize(appKey, options);
         public static void Track(string type, double? value = null, IDictionary<string, object> props = null) => runtime.Track(type, value, props);
         public static void SetUser(string stableUserId) => runtime.SetUser(stableUserId);
+        /// <summary>Records a screen view (<c>pulse.screen_view</c>). Names are trimmed to 128 characters; empty names and repeats of the current screen are ignored.</summary>
+        public static void Screen(string name) => runtime.Screen(name, false);
+        // Entry point for platform hooks: does nothing when AutomaticScreenViews is false.
+        internal static void AutomaticScreen(string name) => runtime.Screen(name, true);
         // Await this task, or ignore it. Never block on it with Wait() or Result on the Unity main thread: delivery
         // uses UnityWebRequest on the main thread, so a blocked main thread cannot finish the flush. If that happens
         // anyway, the SDK releases the wait after about five seconds without delivering.
         public static Task Flush(CancellationToken cancellationToken = default) => runtime.Flush(cancellationToken);
+        // Platform hooks ask this before installing a screen hook. False when the code option or the cached portal settings switch screen views off.
+        internal static bool AutomaticScreenViewsEnabled => runtime.AutomaticScreenViewsEnabled;
         public static bool OptOut { get => runtime.OptOut; set => runtime.OptOut = value; }
 
         internal static readonly TimeSpan FinalSaveTimeout = TimeSpan.FromSeconds(2);
@@ -81,6 +87,7 @@ namespace Mightys.Pulse
         {
             if (client != null || appKey == null || factory == null) return;
             client = factory(appKey, options, optOut);
+            client.StartConfigFetch();
             while (beforeInitialize.Count > 0)
             {
                 var queued = beforeInitialize.Dequeue();
@@ -113,6 +120,34 @@ namespace Mightys.Pulse
             }
             catch (Exception) { Warn("Signal capture failed."); }
         }
+        internal const int MaxScreenName = 128;
+        private string lastScreen;
+        internal void Screen(string name, bool automatic)
+        {
+            try
+            {
+                lock (gate)
+                {
+                    if (automatic && options != null && !options.AutomaticScreenViews) return;
+                    if (automatic && client != null && !client.Policy.AutomaticScreenHook) return;
+                    if (OptOut) return;
+                    var screen = name?.Trim();
+                    if (string.IsNullOrEmpty(screen)) return;
+                    if (screen.Length > MaxScreenName) screen = screen.Substring(0, MaxScreenName).Trim();
+                    if (screen.Length == 0 || string.Equals(screen, lastScreen, StringComparison.Ordinal)) return;
+                    var props = new Dictionary<string, object> { ["screen"] = screen };
+                    if (lastScreen != null) props["previousScreen"] = lastScreen;
+                    lastScreen = screen;
+                    Track("pulse.screen_view", null, props);
+                }
+            }
+            catch (Exception) { Warn("Screen capture failed."); }
+        }
+        /// <summary>Whether a platform integration should capture screens in this run: the code option and the cached portal settings agree.</summary>
+        internal bool AutomaticScreenViewsEnabled
+        {
+            get { try { lock (gate) return client != null ? client.Policy.AutomaticScreenHook : options?.AutomaticScreenViews ?? true; } catch (Exception) { return false; } }
+        }
         internal void SetUser(string value)
         {
             try
@@ -138,7 +173,7 @@ namespace Mightys.Pulse
                     lock (gate)
                     {
                         optOut = value; userHash = null;
-                        if (value) { beforeInitialize.Clear(); session = Guid.NewGuid().ToString("N"); lastActivity = DateTimeOffset.MinValue; }
+                        if (value) { beforeInitialize.Clear(); session = Guid.NewGuid().ToString("N"); lastActivity = DateTimeOffset.MinValue; lastScreen = null; }
                         client?.SetOptOut(value);
                         if (value) { try { forgetInstallId?.Invoke(); } catch (Exception) { } }
                     }

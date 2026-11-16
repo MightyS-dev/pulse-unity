@@ -4,6 +4,30 @@ All notable changes to the Pulse Unity SDK (`dev.mightys.pulse`) are listed here
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-11-16
+
+### Added
+
+- Automatic screen views: `pulse.screen_view` with `screen` (scene name, at most 128 characters) and `previousScreen` when
+  the active scene changes. On by default; `PulseOptions.AutomaticScreenViews = false` turns it off. `Pulse.Screen(name)`
+  records a screen by hand.
+- Settings from the portal: screen views, automatic signals and groups of details can be switched off per app without an
+  update. The SDK reads them at start and keeps them between launches, so changes apply from the next launch.
+  `PulseOptions.AutomaticSignals = false` turns the automatic signals off in code. Code options only turn things off.
+- Default device and app details that identify no one: device type, brand, architecture, Android API level, Unity
+  version, scripting backend, product name, install source, simulator, development build, screen size, scale, dpi and
+  count, orientation, color scheme, time zone and UTC offset, language, preferred language, region, connection type and
+  low power mode. A value the platform cannot give is left out.
+- Usage statistics with every signal: first session date, session count, distinct days used (lifetime and last 30
+  days), previous, average and current session length.
+- Automatic signals `pulse.new_install`, `pulse.app_updated` and `pulse.session_started`, sent before the first signal
+  of the session that triggers them.
+
+### Changed
+
+- The bundle id is sent by default. The Android signing certificate digest stays opt-in.
+- Opt-out also deletes the usage statistics and the saved settings.
+
 ## [0.9.2] - 2026-11-15
 
 ### Added

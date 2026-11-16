@@ -87,15 +87,41 @@ namespace Mightys.Pulse
             return null;
         }
 
-        internal static string SystemJson(IEnvironmentInfo env, PulseOptions options)
+        // Fixed fields first, then the platform's static extra fields. Keys the platform did not give are left out.
+        internal static string SystemJson(IEnvironmentInfo env, PulseOptions options, HashSet<string> written = null, HashSet<string> hidden = null)
         {
+            written = written ?? new HashSet<string>(StringComparer.Ordinal);
             var b = new StringBuilder("{");
             Field(b, "platform", env.Platform); Field(b, "osName", env.OsName); Field(b, "osVersion", env.OsVersion);
             Field(b, "appVersion", options.AppVersion ?? env.AppVersion); Field(b, "appBuildNumber", env.AppBuildNumber);
             Field(b, "deviceModel", env.DeviceModel); Field(b, "locale", env.Locale);
             Field(b, "sdkName", PulseInfo.SdkName); Field(b, "sdkVersion", PulseInfo.Version);
-            if (options.SendAppIdentity)
-            { Field(b, "bundleId", env.BundleId); Field(b, "signingCertSha256", env.SigningCertSha256); }
+            if (!string.IsNullOrEmpty(env.BundleId)) Field(b, "bundleId", env.BundleId);
+            if (options.SendAppIdentity) Field(b, "signingCertSha256", env.SigningCertSha256);
+            foreach (var key in new[] { "platform", "osName", "osVersion", "appVersion", "appBuildNumber", "deviceModel", "locale",
+                "sdkName", "sdkVersion", "bundleId", "signingCertSha256" }) written.Add(key);
+            // The SDK's own usage fields are never taken from the platform.
+            foreach (var key in SystemFields.UsageKeys) written.Add(key);
+            // Keys the portal settings switch off stay in the written set for good, so no later step adds them.
+            if (hidden != null) foreach (var key in hidden) written.Add(key);
+            SystemFields.Append(b, (env as IExtraSystemFields)?.StaticFields, written);
+            foreach (var key in SystemFields.UsageKeys) if (hidden == null || !hidden.Contains(key)) written.Remove(key);
+            return b.Append('}').ToString();
+        }
+
+        // Adds the fields that belong to one signal (dynamic platform fields, then usage statistics) to the base system object.
+        // Statistic fields win over platform fields; keys already in the base are never repeated.
+        internal static string SystemJsonFor(string baseSystem, HashSet<string> baseKeys,
+            IEnumerable<KeyValuePair<string, string>> dynamicFields, IEnumerable<KeyValuePair<string, string>> usageFields)
+        {
+            var b = new StringBuilder(baseSystem, 0, baseSystem.Length - 1, baseSystem.Length + 512);
+            var written = new HashSet<string>(baseKeys, StringComparer.Ordinal);
+            if (usageFields != null)
+            {
+                var usage = new List<KeyValuePair<string, string>>(usageFields);
+                SystemFields.Append(b, usage, written);
+            }
+            SystemFields.Append(b, dynamicFields, written);
             return b.Append('}').ToString();
         }
 

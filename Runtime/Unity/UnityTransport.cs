@@ -33,14 +33,14 @@ namespace Mightys.Pulse
                 try
                 {
                     if (cancellationToken.IsCancellationRequested) { completion.TrySetResult(new TransportResponse(0)); return; }
-                    web = new UnityWebRequest(request.Url.AbsoluteUri, "POST");
-                    web.uploadHandler = new UploadHandlerRaw(request.Body);
+                    // 0.9.4: the settings request is a GET without a body (UnityRequestShape); signals stay a POST.
+                    var shape = UnityRequestShape.For(request);
+                    web = new UnityWebRequest(request.Url.AbsoluteUri, shape.Method);
+                    if (shape.Body != null) web.uploadHandler = new UploadHandlerRaw(shape.Body);
                     web.downloadHandler = new DownloadHandlerBuffer();
                     web.timeout = request.TimeoutSeconds;
                     web.redirectLimit = 0;
-                    web.SetRequestHeader("X-App-Key", request.AppKey);
-                    web.SetRequestHeader("Content-Type", "application/json");
-                    if (request.IsGzip) web.SetRequestHeader("Content-Encoding", "gzip");
+                    foreach (var header in shape.Headers) web.SetRequestHeader(header.Key, header.Value);
                     var active = web;
                     registration = cancellationToken.Register(() => mainThread.Post(__ =>
                     { if (!completion.Task.IsCompleted) try { active.Abort(); } catch (Exception) { } }, null));
@@ -49,9 +49,9 @@ namespace Mightys.Pulse
                     {
                         try
                         {
-                            var status = active.result == UnityWebRequest.Result.ConnectionError ||
-                                active.result == UnityWebRequest.Result.DataProcessingError ? 0 : (int)active.responseCode;
-                            completion.TrySetResult(new TransportResponse(status, active.downloadHandler.text, active.GetResponseHeader("Retry-After")));
+                            var status = UnityRequestShape.Status(active.result == UnityWebRequest.Result.ConnectionError ||
+                                active.result == UnityWebRequest.Result.DataProcessingError, active.responseCode);
+                            completion.TrySetResult(new TransportResponse(status, active.downloadHandler?.text ?? "", active.GetResponseHeader("Retry-After")));
                         }
                         catch (Exception) { completion.TrySetResult(new TransportResponse(0)); }
                         finally { registration.Dispose(); active.Dispose(); }

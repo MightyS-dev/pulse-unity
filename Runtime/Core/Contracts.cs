@@ -12,7 +12,7 @@ namespace Mightys.Pulse
         /// <summary>SDK identifier sent with each batch.</summary>
         public const string SdkName = "pulse-unity";
         /// <summary>SDK version.</summary>
-        public const string Version = "0.9.2";
+        public const string Version = "0.9.4";
         /// <summary>Default ingest host.</summary>
         public const string DefaultHost = "https://in.mightys.dev";
         internal static bool DebugBuild;
@@ -42,6 +42,10 @@ namespace Mightys.Pulse
         public bool SendAppIdentity { get; set; }
         /// <summary>Overrides the detected application version.</summary>
         public string AppVersion { get; set; }
+        /// <summary>Send a <c>pulse.screen_view</c> signal when the platform integration reports a screen. Default true. Manual <c>Pulse.Screen</c> calls always work. The portal can switch screen views off for the app; Setting it to false turns it off even when the portal has it on; true never forces it on over the portal.</summary>
+        public bool AutomaticScreenViews { get; set; } = true;
+        /// <summary>Send the automatic signals (<c>pulse.session_started</c>, <c>pulse.new_install</c>, <c>pulse.app_updated</c> and <c>pulse.screen_view</c>). Default true. The portal can switch them off for the app; Setting it to false turns it off even when the portal has it on; true never forces it on over the portal.</summary>
+        public bool AutomaticSignals { get; set; } = true;
 
         internal PulseOptions Snapshot()
         {
@@ -56,7 +60,8 @@ namespace Mightys.Pulse
                 MaxBatchSize = Math.Max(1, Math.Min(1000, MaxBatchSize)),
                 MaxQueueSize = Math.Max(1, Math.Min(1000000, MaxQueueSize)),
                 MaxQueueAgeDays = FinitePositive(MaxQueueAgeDays, 7, MaxQueueAgeLimitDays),
-                Gzip = Gzip, Debug = Debug, SendAppIdentity = SendAppIdentity, AppVersion = AppVersion
+                Gzip = Gzip, Debug = Debug, SendAppIdentity = SendAppIdentity, AppVersion = AppVersion,
+                AutomaticScreenViews = AutomaticScreenViews, AutomaticSignals = AutomaticSignals
             };
             snapshot.debug = debug;
             return snapshot;
@@ -128,7 +133,7 @@ namespace Mightys.Pulse
         public Uri Url { get; }
         /// <summary>App key for the request header.</summary>
         public string AppKey { get; }
-        /// <summary>Wire bytes of the body, already compressed when <see cref="IsGzip"/> is true.</summary>
+        /// <summary>Wire bytes of the body, already compressed when <see cref="IsGzip"/> is true. Null for a GET.</summary>
         public byte[] Body { get; }
         /// <summary>Whether the body is gzip compressed.</summary>
         public bool IsGzip { get; }
@@ -136,9 +141,16 @@ namespace Mightys.Pulse
         // Whole-request timeout scaled with the wire size: 10 s plus 1 s per 16 KiB (a slow 128 kbit/s uplink),
         // capped at 90 s, so a full 1 MiB batch on a slow network is not cut off and retried forever.
         public int TimeoutSeconds => TimeoutFor(Body?.Length ?? 0);
-        /// <summary>Creates a request.</summary>
+        /// <summary>True for a GET without a body (the settings request). A transport sends it as GET and ignores <see cref="Body"/>.</summary>
+        public bool IsGet { get; private set; }
+        /// <summary>Value for the If-None-Match header, quotes included, or null. Only set on a GET.</summary>
+        public string IfNoneMatch { get; private set; }
+        /// <summary>Creates a POST request.</summary>
         public TransportRequest(Uri url, string appKey, byte[] body, bool isGzip)
         { Url = url; AppKey = appKey; Body = body; IsGzip = isGzip; }
+        /// <summary>Creates the GET request for the app's settings. The timeout is the base 10 seconds.</summary>
+        public static TransportRequest ForGet(Uri url, string appKey, string ifNoneMatch) =>
+            new TransportRequest(url, appKey, null, false) { IsGet = true, IfNoneMatch = ifNoneMatch };
         internal static int TimeoutFor(int bytes) => Math.Min(90, 10 + Math.Max(0, bytes) / 16384);
     }
 
