@@ -13,7 +13,7 @@ own startup code.
 In Unity, open Window > Package Manager > + > Add package from git URL and enter:
 
 ```text
-https://github.com/MightyS-dev/pulse-unity.git#0.9.4
+https://github.com/MightyS-dev/pulse-unity.git#0.9.5
 ```
 
 The part after `#` pins the version; change it to move to a newer release. Use Unity 2022.3 LTS or newer and the
@@ -132,6 +132,8 @@ Every signal carries a test flag, so test traffic never mixes with real data.
   normal view.
 
 ## Delivery and offline behavior
+
+Each batch carries an id, so a batch sent again after a lost answer is stored only once.
 
 - Signals are batched and sent in the background, every `FlushIntervalSeconds` or when a batch is full.
 - While the device is offline, signals wait in a queue on disk. The queue survives restarts and is sent when the

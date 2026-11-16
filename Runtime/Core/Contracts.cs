@@ -12,7 +12,7 @@ namespace Mightys.Pulse
         /// <summary>SDK identifier sent with each batch.</summary>
         public const string SdkName = "pulse-unity";
         /// <summary>SDK version.</summary>
-        public const string Version = "0.9.4";
+        public const string Version = "0.9.5";
         /// <summary>Default ingest host.</summary>
         public const string DefaultHost = "https://in.mightys.dev";
         internal static bool DebugBuild;
@@ -145,9 +145,15 @@ namespace Mightys.Pulse
         public bool IsGet { get; private set; }
         /// <summary>Value for the If-None-Match header, quotes included, or null. Only set on a GET.</summary>
         public string IfNoneMatch { get; private set; }
-        /// <summary>Creates a POST request.</summary>
+        /// <summary>Batch id: 32 lowercase hex characters, stable for every retry of the same batch. A transport sends it as the
+        /// <c>X-Pulse-Batch</c> header on a POST. Null for a GET or when no id was made.</summary>
+        public string BatchId { get; }
+        /// <summary>Creates a POST request without a batch id.</summary>
         public TransportRequest(Uri url, string appKey, byte[] body, bool isGzip)
         { Url = url; AppKey = appKey; Body = body; IsGzip = isGzip; }
+        /// <summary>Creates a POST request that carries a batch id.</summary>
+        public TransportRequest(Uri url, string appKey, byte[] body, bool isGzip, string batchId)
+        { Url = url; AppKey = appKey; Body = body; IsGzip = isGzip; BatchId = batchId; }
         /// <summary>Creates the GET request for the app's settings. The timeout is the base 10 seconds.</summary>
         public static TransportRequest ForGet(Uri url, string appKey, string ifNoneMatch) =>
             new TransportRequest(url, appKey, null, false) { IsGet = true, IfNoneMatch = ifNoneMatch };

@@ -6,7 +6,8 @@ namespace Mightys.Pulse
     // 0.9.4 platform rules without UnityEngine types, so the .NET tests cover them.
 
     // How UnityTransport sends one request: the settings request is a GET with the app key, If-None-Match when the core
-    // gives one, and no body; signals are a POST with the JSON body.
+    // gives one, and no body; signals are a POST with the JSON body and, from 0.9.5, X-Pulse-Batch when the core cut a
+    // batch id (the server then stores a batch sent again after a lost answer only once). Never X-Pulse-Batch on the GET.
     internal sealed class UnityRequestShape
     {
         internal string Method;
@@ -24,6 +25,7 @@ namespace Mightys.Pulse
             }
             shape.Headers.Add(new KeyValuePair<string, string>("Content-Type", "application/json"));
             if (request.IsGzip) shape.Headers.Add(new KeyValuePair<string, string>("Content-Encoding", "gzip"));
+            if (!string.IsNullOrEmpty(request.BatchId)) shape.Headers.Add(new KeyValuePair<string, string>("X-Pulse-Batch", request.BatchId));
             return shape;
         }
 

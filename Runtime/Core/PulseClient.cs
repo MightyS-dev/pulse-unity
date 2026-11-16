@@ -325,7 +325,7 @@ namespace Mightys.Pulse
                     {
                         SavePending();
                         requestCancellation.Token.ThrowIfCancellationRequested();
-                        sending = transport.SendAsync(new TransportRequest(url, appKey, batch.Wire, batch.Gzip),
+                        sending = transport.SendAsync(new TransportRequest(url, appKey, batch.Wire, batch.Gzip, batch.Id),
                             requestCancellation.Token) ?? Task.FromResult(new TransportResponse(0));
                         // Cancellation (opt-out or stop) must not depend on the transport noticing it. The Unity
                         // transport needs the main thread, which may be blocked during quit or a domain reload.
@@ -510,7 +510,7 @@ namespace Mightys.Pulse
             using (var output = new MemoryStream())
             using (var writer = new BinaryWriter(output, Encoding.UTF8, true))
             {
-                writer.Write("MSB1"); writer.Write(batch.CanSplit); writer.Write(batch.Gzip); writer.Write(batch.Failures);
+                writer.Write("MSB2"); writer.Write(batch.Id); writer.Write(batch.CanSplit); writer.Write(batch.Gzip); writer.Write(batch.Failures);
                 writer.Write(nextAttempt.UtcTicks); writer.Write(batch.Entries.Count);
                 foreach (var entry in batch.Entries) writer.Write(entry.Id);
                 writer.Write(batch.Json.Length); writer.Write(batch.Json); writer.Write(batch.Wire.Length); writer.Write(batch.Wire);
@@ -535,8 +535,12 @@ namespace Mightys.Pulse
             using (var input = new MemoryStream(bytes, 0, bytes.Length - 32, false))
             using (var reader = new BinaryReader(input, new UTF8Encoding(false, true), true))
             {
-                if (reader.ReadString() != "MSB1") throw new InvalidDataException();
-                var batch = new Batch { CanSplit = reader.ReadBoolean(), Gzip = reader.ReadBoolean(), Failures = reader.ReadInt32(), Entries = new List<QueueEntry>() };
+                var magic = reader.ReadString();
+                if (magic != "MSB1" && magic != "MSB2") throw new InvalidDataException();
+                // A batch saved by an older build has no id; it gets a new one (a duplicate beats a lost batch).
+                var savedId = magic == "MSB2" ? reader.ReadString() : NewBatchId();
+                if (!BatchIdFormat.IsValid(savedId)) throw new InvalidDataException();
+                var batch = new Batch { Id = savedId, CanSplit = reader.ReadBoolean(), Gzip = reader.ReadBoolean(), Failures = reader.ReadInt32(), Entries = new List<QueueEntry>() };
                 var retryAt = new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero);
                 var count = reader.ReadInt32();
                 if (count < 1 || count > 1000 || batch.Failures < 0) throw new InvalidDataException();
@@ -581,6 +585,16 @@ namespace Mightys.Pulse
         private void Remove(Batch batch)
         { var ids = new HashSet<string>(batch.Entries.Select(e => e.Id), StringComparer.Ordinal); queue.RemoveAll(e => ids.Contains(e.Id)); }
 
+        /// <summary>16 bytes from the secure generator as 32 lowercase hex characters.</summary>
+        internal static string NewBatchId()
+        {
+            var bytes = new byte[16];
+            using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(bytes);
+            var chars = new char[32];
+            for (var i = 0; i < 16; i++) { chars[2 * i] = "0123456789abcdef"[bytes[i] >> 4]; chars[2 * i + 1] = "0123456789abcdef"[bytes[i] & 15]; }
+            return new string(chars);
+        }
+
         private Batch MakeBatch(IReadOnlyList<QueueEntry> source, bool canSplit)
         {
             var selected = new List<QueueEntry>(); var b = new StringBuilder("["); var size = 2;
@@ -593,7 +607,7 @@ namespace Mightys.Pulse
             }
             if (selected.Count == 0) throw new InvalidDataException("Oversized queued signal.");
             var json = Encoding.UTF8.GetBytes(b.Append(']').ToString());
-            var batch = new Batch { Entries = selected, Json = json, Wire = json, CanSplit = canSplit };
+            var batch = new Batch { Id = NewBatchId(), Entries = selected, Json = json, Wire = json, CanSplit = canSplit };
             if (options.Gzip && !gzipDisabled && json.Length > 1024)
             {
                 using (var output = new MemoryStream())
@@ -623,8 +637,12 @@ namespace Mightys.Pulse
             finally { processing.Release(); }
         }
 
+        private static class BatchIdFormat
+        {
+            internal static bool IsValid(string id) => id != null && id.Length == 32 && id.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+        }
         private sealed class Batch
-        { internal List<QueueEntry> Entries; internal byte[] Json, Wire; internal bool Gzip, CanSplit; internal int Failures; }
+        { internal string Id; internal List<QueueEntry> Entries; internal byte[] Json, Wire; internal bool Gzip, CanSplit; internal int Failures; }
         private sealed class FlushWaiter
         { internal long Sequence; internal TaskCompletionSource<bool> Completion; }
     }

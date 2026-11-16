@@ -4,6 +4,13 @@ All notable changes to the Pulse Unity SDK (`dev.mightys.pulse`) are listed here
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2026-11-16
+
+### Added
+
+- Each batch carries an id (header `X-Pulse-Batch`), kept for every retry of that batch, so a batch sent again after a
+  lost answer is stored only once.
+
 ## [0.9.4] - 2026-11-16
 
 ### Added
