@@ -1,7 +1,10 @@
 {
   "name": "Mightys.Pulse",
   "rootNamespace": "Mightys.Pulse",
-  "references": [],
+  "references": [ "UnityEngine.UI" ],
+  "versionDefines": [
+    { "name": "com.unity.ugui", "expression": "1.0.0", "define": "PULSE_UGUI" }
+  ],
   "autoReferenced": true,
   "allowUnsafeCode": false
 }

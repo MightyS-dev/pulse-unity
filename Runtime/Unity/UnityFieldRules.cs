@@ -167,6 +167,19 @@ namespace Mightys.Pulse
             ["Turkish"] = "tr", ["Ukrainian"] = "uk", ["Vietnamese"] = "vi", ["Hindi"] = "hi",
         };
 
+        // UnityEngine.SystemLanguage names to the codes of the 12 built-in screen languages. A language without built-in texts gives "",
+        // so the screens then fall back to the culture and finally English. Unity players often report an invariant culture, which is why
+        // the screens ask the system language first.
+        private static readonly Dictionary<string, string> ScreenLanguages = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["English"] = "en", ["German"] = "de", ["French"] = "fr", ["Spanish"] = "es", ["Italian"] = "it", ["Portuguese"] = "pt-BR",
+            ["Japanese"] = "ja", ["Korean"] = "ko", ["Chinese"] = "zh-Hans", ["ChineseSimplified"] = "zh-Hans", ["Turkish"] = "tr",
+            ["Russian"] = "ru", ["SerboCroatian"] = "sr-Latn",
+        };
+
+        internal static string ScreenLanguage(string unitySystemLanguage) =>
+            unitySystemLanguage != null && ScreenLanguages.TryGetValue(unitySystemLanguage, out var code) ? code : "";
+
         internal static string SystemLanguage(string unitySystemLanguage) =>
             unitySystemLanguage != null && Languages.TryGetValue(unitySystemLanguage, out var code) ? code : null;
     }

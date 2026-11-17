@@ -12,10 +12,19 @@ namespace Mightys.Pulse
         /// <summary>SDK identifier sent with each batch.</summary>
         public const string SdkName = "pulse-unity";
         /// <summary>SDK version.</summary>
-        public const string Version = "0.9.5";
+        public const string Version = "0.9.7";
         /// <summary>Default ingest host.</summary>
         public const string DefaultHost = "https://in.mightys.dev";
         internal static bool DebugBuild;
+    }
+
+    /// <summary>How much of an error is sent.</summary>
+    public enum PulseErrorDetail
+    {
+        /// <summary>Type, filtered message and stack frames (default).</summary>
+        Full,
+        /// <summary>Only the error type. No message and no frames.</summary>
+        TypeOnly
     }
 
     /// <summary>Delivery and queue options. Values are copied and clamped at initialization.</summary>
@@ -46,6 +55,15 @@ namespace Mightys.Pulse
         public bool AutomaticScreenViews { get; set; } = true;
         /// <summary>Send the automatic signals (<c>pulse.session_started</c>, <c>pulse.new_install</c>, <c>pulse.app_updated</c> and <c>pulse.screen_view</c>). Default true. The portal can switch them off for the app; Setting it to false turns it off even when the portal has it on; true never forces it on over the portal.</summary>
         public bool AutomaticSignals { get; set; } = true;
+        /// <summary>Follow the portal for heatmaps of taps and clicks (<c>pulse.heatmap</c>). Default true. Heatmaps are off until the owner switches them on in the portal; false turns them off for good, true never forces them on over the portal.</summary>
+        public bool CaptureHeatmaps { get; set; } = true;
+
+        /// <summary>Capture unhandled errors and crashes and send them as <c>pulse.error</c>. Default true. When false, no handler is installed. <c>Pulse.TrackError</c> still works.</summary>
+        public bool CaptureErrors { get; set; } = true;
+        /// <summary>How much of an error is sent: <see cref="PulseErrorDetail.Full"/> (default) or <see cref="PulseErrorDetail.TypeOnly"/>.</summary>
+        public PulseErrorDetail ErrorDetail { get; set; } = PulseErrorDetail.Full;
+        /// <summary>How the SDK treats App Control (required updates and maintenance windows set in the portal). <see cref="ControlMode.Automatic"/> (default) and <see cref="ControlMode.Manual"/> check in the background and keep the state; <see cref="ControlMode.Off"/> makes no request at all. Opting out of analytics does not change it.</summary>
+        public ControlMode Control { get; set; } = ControlMode.Automatic;
 
         internal PulseOptions Snapshot()
         {
@@ -61,7 +79,8 @@ namespace Mightys.Pulse
                 MaxQueueSize = Math.Max(1, Math.Min(1000000, MaxQueueSize)),
                 MaxQueueAgeDays = FinitePositive(MaxQueueAgeDays, 7, MaxQueueAgeLimitDays),
                 Gzip = Gzip, Debug = Debug, SendAppIdentity = SendAppIdentity, AppVersion = AppVersion,
-                AutomaticScreenViews = AutomaticScreenViews, AutomaticSignals = AutomaticSignals
+                AutomaticScreenViews = AutomaticScreenViews, AutomaticSignals = AutomaticSignals,
+                CaptureErrors = CaptureErrors, ErrorDetail = ErrorDetail, CaptureHeatmaps = CaptureHeatmaps, Control = Control
             };
             snapshot.debug = debug;
             return snapshot;
@@ -126,6 +145,15 @@ namespace Mightys.Pulse
         string SigningCertSha256 { get; }
     }
 
+    /// <summary>Optional. Implement it next to <see cref="IEnvironmentInfo"/> on the same object when the platform knows the
+    /// language of the device better than the runtime culture does (some runtimes report an invariant culture). The built-in
+    /// screens use it before the culture when it is not empty.</summary>
+    public interface IScreenLanguage
+    {
+        /// <summary>A BCP-47 language code such as "de" or "pt-BR", or empty when unknown. Read once at start; must not block.</summary>
+        string ScreenLanguage { get; }
+    }
+
     /// <summary>One HTTP request prepared by the delivery core.</summary>
     public sealed class TransportRequest
     {
@@ -140,7 +168,12 @@ namespace Mightys.Pulse
         /// <summary>Whole-request timeout in seconds, scaled with the body size.</summary>
         // Whole-request timeout scaled with the wire size: 10 s plus 1 s per 16 KiB (a slow 128 kbit/s uplink),
         // capped at 90 s, so a full 1 MiB batch on a slow network is not cut off and retried forever.
-        public int TimeoutSeconds => TimeoutFor(Body?.Length ?? 0);
+        public int TimeoutSeconds => timeoutSeconds > 0 ? timeoutSeconds : TimeoutFor(Body?.Length ?? 0);
+        private int timeoutSeconds;
+        /// <summary>True for the App Control request: a GET that carries no app key and no other identity. Only a transport that implements <see cref="IControlTransport"/> is given it.</summary>
+        public bool IsControl { get; private set; }
+        /// <summary>For the App Control request: seconds allowed until the response headers arrive (the rest of the whole-request timeout covers the body). Zero for other requests.</summary>
+        public int ResponseHeadersSeconds { get; private set; }
         /// <summary>True for a GET without a body (the settings request). A transport sends it as GET and ignores <see cref="Body"/>.</summary>
         public bool IsGet { get; private set; }
         /// <summary>Value for the If-None-Match header, quotes included, or null. Only set on a GET.</summary>
@@ -148,6 +181,11 @@ namespace Mightys.Pulse
         /// <summary>Batch id: 32 lowercase hex characters, stable for every retry of the same batch. A transport sends it as the
         /// <c>X-Pulse-Batch</c> header on a POST. Null for a GET or when no id was made.</summary>
         public string BatchId { get; }
+        /// <summary>Content-Type of the body. Null means application/json (batches). Set for the heatmap screenshot upload.</summary>
+        public string ContentType { get; private set; }
+        /// <summary>Creates the POST request of a heatmap screenshot: raw image bytes, never compressed.</summary>
+        public static TransportRequest ForUpload(Uri url, string appKey, byte[] body, string contentType) =>
+            new TransportRequest(url, appKey, body, false) { ContentType = contentType };
         /// <summary>Creates a POST request without a batch id.</summary>
         public TransportRequest(Uri url, string appKey, byte[] body, bool isGzip)
         { Url = url; AppKey = appKey; Body = body; IsGzip = isGzip; }
@@ -157,6 +195,9 @@ namespace Mightys.Pulse
         /// <summary>Creates the GET request for the app's settings. The timeout is the base 10 seconds.</summary>
         public static TransportRequest ForGet(Uri url, string appKey, string ifNoneMatch) =>
             new TransportRequest(url, appKey, null, false) { IsGet = true, IfNoneMatch = ifNoneMatch };
+        /// <summary>Creates the App Control GET: no app key, no body, <c>Accept: application/json</c>, 3 seconds to the response headers and 5 seconds in all.</summary>
+        public static TransportRequest ForControl(Uri url, string ifNoneMatch) =>
+            new TransportRequest(url, null, null, false) { IsGet = true, IfNoneMatch = ifNoneMatch, IsControl = true, timeoutSeconds = 5, ResponseHeadersSeconds = 3 };
         internal static int TimeoutFor(int bytes) => Math.Min(90, 10 + Math.Max(0, bytes) / 16384);
     }
 
@@ -173,6 +214,10 @@ namespace Mightys.Pulse
         public TransportResponse(int statusCode, string body = "", string retryAfter = null)
         { StatusCode = statusCode; Body = body; RetryAfter = retryAfter; }
     }
+
+    /// <summary>Marks a transport that sends <see cref="TransportRequest.IsControl"/> requests without any identity header and returns at most 65536 body bytes.
+    /// Without it the SDK makes no App Control request and the state stays <see cref="ControlKind.Normal"/>.</summary>
+    public interface IControlTransport { }
 
     /// <summary>Sends prepared requests to the ingest host.</summary>
     public interface ITransport

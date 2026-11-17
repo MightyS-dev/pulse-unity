@@ -13,7 +13,7 @@ own startup code.
 In Unity, open Window > Package Manager > + > Add package from git URL and enter:
 
 ```text
-https://github.com/MightyS-dev/pulse-unity.git#0.9.5
+https://github.com/MightyS-dev/pulse-unity.git#0.9.7
 ```
 
 The part after `#` pins the version; change it to move to a newer release. Use Unity 2022.3 LTS or newer and the
@@ -66,7 +66,7 @@ deleted when the app is uninstalled, and is replaced by a new one after opt-out.
 is not derived from any device or advertising identifier and is not shared between apps.
 
 Never sent: an advertising id, a device identifier, the device's name, a location, contacts, the network carrier, or
-automatic gameplay events.
+automatic screen or gameplay events.
 
 The SDK does not read or send the device's IP address as data. As with any HTTP request, the server sees the connection
 address; it uses it only to derive a two-letter country code and does not store it.
@@ -93,6 +93,10 @@ Pulse.Initialize("YOUR_APP_KEY", new PulseOptions { FlushIntervalSeconds = 30, M
 | `AppVersion` | `Application.version` | Overrides the app version that is sent. |
 | `AutomaticScreenViews` | `true` | Sends `pulse.screen_view` when the active scene changes. `false` turns it off. |
 | `AutomaticSignals` | `true` | Sends the automatic signals (`pulse.session_started`, `pulse.new_install`, `pulse.app_updated`, `pulse.screen_view`). `false` turns them off. |
+| `CaptureErrors` | `true` | Sends unhandled exceptions and crashes as `pulse.error`. `false` installs no handler; `Pulse.TrackError` still works. |
+| `ErrorDetail` | `Full` | `Full` sends the type, the filtered message and the stack frames; `TypeOnly` sends the type only. |
+| `CaptureHeatmaps` | `true` | Follows the portal for heatmaps of taps and clicks (`pulse.heatmap`), which are off until you switch them on there. `false` never captures them; `true` never forces them on. See Heatmaps. |
+| `Control` | `ControlMode.Automatic` | App Control: `Automatic` checks by itself and draws its own screens (when uGUI is in the project, otherwise it acts as `Manual`), `Manual` checks and keeps the state but draws nothing, `Off` makes no request at all. See App Control. |
 
 Options are read once at `Initialize`; changing the object afterwards has no effect.
 
@@ -109,7 +113,127 @@ Turn them off in code:
 Pulse.Initialize("YOUR_APP_KEY", new PulseOptions { AutomaticScreenViews = false });
 ```
 
-Name screens yourself (menus, panels inside one scene) with `Pulse.Screen("Settings")`; it works whatever the code option, while a portal switch still applies.
+Name screens yourself (menus, panels inside one scene) with `Pulse.Screen("Settings")`; it works whatever the option.
+
+## Errors and crashes
+
+Unhandled exceptions are sent as `pulse.error` by default, with the exception type, the message and the stack frames
+(file name and line, no directory). Emails, addresses, long numbers, UUIDs, URL query strings and folder paths are
+replaced with `<filtered>` before anything leaves the device, and the server filters again. At most 10 errors of one
+type are sent per session, so a loop cannot use up your quota. Opt-out sends nothing.
+
+- Exceptions logged by Unity (for example from `Update`) are read from the logger. Pulse wraps the current log handler
+  and always passes every message on to it, so the Console and other tools see exactly what they saw before.
+- Exceptions on other threads and faulted tasks nobody awaited are caught too. When the runtime is ending, the error is
+  saved as a crash and sent at the next launch.
+- Send a handled error yourself: `Pulse.TrackError(exception)`, optionally with props.
+
+Turn automatic capture off with `new PulseOptions { CaptureErrors = false }`, or send the type only with
+`ErrorDetail = PulseErrorDetail.TypeOnly`. Errors appear on the Errors screen of the portal.
+
+## Automatic signals
+
+Besides your own signals, the SDK sends a few automatic ones. Each can be switched in the portal (app settings,
+Automatic signals); the full list with what each one costs is at https://pulse.mightys.dev/docs/automatic-signals/.
+
+| Signal or field | What it is | Default | Uses signals |
+| --- | --- | --- | --- |
+| `pulse.session_started`, `pulse.new_install`, `pulse.app_updated` | sessions, installs and updates | on | one per session, install or update |
+| `pulse.screen_view` | the active scene changed (see Screen views); carries `previousScreenSeconds` | on | one per scene change |
+| `launchMs` | time from engine start to the first frame, on the cold start `pulse.session_started` | on | no |
+| `foregroundsToday`, `previousForegroundSeconds` | how often and how long the app was in front | on | no |
+| `notificationPermission`, `trackingPermission` | the notification permission status (Android and iOS) and the iOS App Tracking Transparency status | on | no |
+| `pulse.permission_changed` | one of those statuses changed since the last launch | on | rarely |
+| `pulse.deep_link` | the app was opened by a link: scheme, host and path only | on | one per link |
+| `pulse.app_opened`, `pulse.app_backgrounded` | the app came to the front or went to the back | off | about five each per player a day |
+| `pulse.heatmap` | taps and clicks per screen, see Heatmaps; switch off with `PulseOptions.CaptureHeatmaps` | off | none (own allowance) |
+
+- Statuses are only read, never asked: the SDK never shows a permission prompt, and it reads the tracking status
+  without linking App Tracking Transparency, so a game without ATT or without its Info.plist key works as before. The
+  advertising identifier is never read.
+- Deep links come from `Application.deepLinkActivated` and, once at start, `Application.absoluteURL` on Android and
+  iOS. The query, the fragment and every parameter except the three `utm_` campaign tags are never sent.
+- Front and back follow pause and resume on phones and focus on desktop, one report per real change.
+- Caps on the device keep automatic signals cheap: per session at most 20 `pulse.app_opened` and
+  `pulse.app_backgrounded`, 10 `pulse.deep_link`, 5 `pulse.permission_changed` and 100 `pulse.screen_view`, and at
+  most 300 automatic signals per device and day. Your own signals are never capped. When the plan reaches 90%, the
+  portal can pause the opt-in signals and screen views until the next month.
+
+## Heatmaps
+
+Heatmaps are off until you switch them on for the app in the portal (they have their own allowance). Taps and clicks are
+collected per screen, folded on the server into a grid, and shown over a picture of the screen.
+
+- What is collected: the screen name (the same as `pulse.screen_view`), where the tap was (a fraction of the width and
+  logical points from the top), and its kind (`tap`, or `rage` for three or more taps within one second and 30 points).
+  The position uses points (pixels divided by `Screen.dpi / 160`; where the dpi is unknown, pixels).
+- What is never collected: element names or text, recordings, what was typed, the keyboard. Nothing is recorded while the
+  on-screen keyboard is visible, on a `UnityEngine.UI.InputField` or TextMeshPro input field (or while one is selected),
+  or on an object marked with the `PulseHeatmapIgnore` component (put it on an object or any parent to keep its taps out).
+- Switch off for good with `PulseOptions.CaptureHeatmaps = false`. Taps are read from the legacy `Input` class or, when
+  only the Input System is active, from its primary pointer. The SDK never consumes or delays an input event.
+- Screenshots: only in a development build (`Debug.isDebugBuild`) with heatmaps on, one picture per screen, orientation
+  and app version, taken about a second after the screen appears and sent once. Release builds never send pictures.
+
+## App Control
+
+App Control lets you require an update, suggest one, put the app into maintenance or show a short notice, all from the dashboard.
+It works by itself after `Pulse.Initialize`: no extra code, no scene object, no assets. When a rule applies, the package draws a
+screen on a canvas of its own (uGUI, created from code, highest sorting order, `DontDestroyOnLoad`) and removes it again when the
+rule ends. Nothing exists while there is nothing to show.
+
+- **Full screen, cannot be closed:** a required update, a blocked version, maintenance. The button opens the store page
+  (Android: the Play page of the package when the dashboard has no link); maintenance has "Try again".
+- **Dialog:** a suggested update ("Update" and "Not now"; a closed suggestion is not shown again for 24 hours).
+- **Card:** an announcement, or what is new in the version the app was just updated to.
+- **Strip:** a notice that maintenance starts soon, and in a development build the line "Test build: App Control preview"
+  (the rules apply, the lock can be continued).
+
+The screens follow the system light or dark theme where Unity can tell (Android and iOS; dark elsewhere), use the safe area,
+and show the built-in texts in 12 languages (en, de, fr, es, it, pt-BR, ja, ko, zh-Hans, tr, ru, sr-Latn) chosen from the
+device language (`Application.systemLanguage` first, because mobile players often report no culture, then the culture), English otherwise. Texts you set in the dashboard replace the built-in ones. The screen never changes
+`Time.timeScale`, never pauses audio and never closes the app. The mouse cursor is shown while a full screen is up and put back
+afterwards. If the scene has no `EventSystem`, one is created for as long as a full screen is up (the new Input System is used
+when it is active, with no hard dependency on it).
+
+**uGUI is optional.** The built-in screen is drawn with uGUI (`com.unity.ugui`), which this package does not require, so a game without
+UI pays nothing for it (the engine's UI modules added about 6.7 MiB to an empty Android IL2CPP build when they were required). When the
+project has no `com.unity.ugui` the package compiles without the screen: `ControlMode.Automatic` then behaves like `Manual`, nothing is
+drawn, and `Pulse.Control.State` and `Pulse.Control.Changed` still work. A development build logs one line the first time a screen would
+have been shown. Add `com.unity.ugui` to the project to get the built-in screens (the package detects it by itself, with no setting).
+
+### Your own screens
+
+```csharp
+Pulse.Initialize("YOUR_APP_KEY", new PulseOptions { Control = ControlMode.Manual });
+Pulse.Control.Changed += (sender, state) =>
+{
+    // Runs on a thread pool thread: hand over to the main thread before touching Unity objects.
+    myUi.Show(state.Kind, state.Title, state.Body, state.ButtonText, state.AllowContinue);
+};
+// "Update": Pulse.Control.OpenStore();   "Not now": Pulse.Control.Dismiss();   "Try again": _ = Pulse.Control.CheckNowAsync();
+```
+
+`Pulse.Control.State` and `Pulse.Control.Changed` work in every mode. With `ControlMode.Off` the package makes no request for
+App Control and the state is always `Normal`. Opting out of analytics does not switch App Control off, and the request carries
+no app key, no install id and no user id.
+
+To see the built-in screens without a server (any screen, language and theme), call
+`PulseControlPreview.Show(ControlKind.UpdateRequired, "de", dark: false)` and `PulseControlPreview.Hide()`, or import the
+"App Control demo" sample.
+
+For the notes you send with a store submission: "The app checks on launch for required updates and maintenance windows."
+
+### How it fails safely
+
+1. Starting the SDK never waits for the network, and a check never runs on the main thread.
+2. One request per check, 3 seconds to the response headers and 5 seconds in all, at most 64 KiB of answer, no retry loop and
+   at most one automatic check in 60 seconds (when the app returns to the front).
+3. Any failure (no network, a server error, an answer that cannot be read) keeps the last known state, or `Normal`. Nothing is
+   ever locked because of something unknown.
+4. A lock older than 30 days is ignored; a maintenance window from the saved answer ends at its end time and never lasts more than 72 hours.
+5. There is always a way out: a required update turns into a suggestion when the store version is not newer than the installed one,
+   after three returns from the store on the same version, or when there is no store link. The package never closes the app.
 
 ## Settings in the portal
 

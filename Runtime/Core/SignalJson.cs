@@ -13,6 +13,10 @@ namespace Mightys.Pulse
         internal double? Value;
         // True when no user id was set at capture, so the anonymous install id hash applies.
         internal bool Anonymous;
+        // Set for pulse.error signals; written as the top-level error object.
+        internal ErrorEvent Error;
+        // Set for pulse.heatmap signals; the ready made top-level heatmap object.
+        internal string HeatmapJson;
     }
 
     internal static class SignalJson
@@ -102,10 +106,12 @@ namespace Mightys.Pulse
                 "sdkName", "sdkVersion", "bundleId", "signingCertSha256" }) written.Add(key);
             // The SDK's own usage fields are never taken from the platform.
             foreach (var key in SystemFields.UsageKeys) written.Add(key);
+            foreach (var key in SystemFields.AutoKeys) written.Add(key);
             // Keys the portal settings switch off stay in the written set for good, so no later step adds them.
             if (hidden != null) foreach (var key in hidden) written.Add(key);
             SystemFields.Append(b, (env as IExtraSystemFields)?.StaticFields, written);
             foreach (var key in SystemFields.UsageKeys) if (hidden == null || !hidden.Contains(key)) written.Remove(key);
+            foreach (var key in SystemFields.AutoKeys) if (hidden == null || !hidden.Contains(key)) written.Remove(key);
             return b.Append('}').ToString();
         }
 
@@ -165,7 +171,7 @@ namespace Mightys.Pulse
 
         private static bool IsAsciiDigit(char c) => c >= '0' && c <= '9';
 
-        internal static string Serialize(SignalInput signal, string system, bool debug)
+        internal static string Serialize(SignalInput signal, string system, bool debug, PulseErrorDetail detail = PulseErrorDetail.Full)
         {
             var b = new StringBuilder("{\"timestamp\":");
             b.Append(Quote(signal.Timestamp.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", Invariant)));
@@ -174,7 +180,10 @@ namespace Mightys.Pulse
             b.Append(",\"type\":").Append(Quote(signal.Type)).Append(",\"value\":");
             b.Append(signal.Value.HasValue ? signal.Value.Value.ToString("R", Invariant) : "null");
             b.Append(",\"debug\":").Append(debug ? "true" : "false");
-            return b.Append(",\"system\":").Append(system).Append(",\"props\":").Append(signal.PropsJson).Append('}').ToString();
+            b.Append(",\"system\":").Append(system).Append(",\"props\":").Append(signal.PropsJson);
+            if (signal.Error != null) b.Append(",\"error\":").Append(ErrorJson.Serialize(signal.Error, detail));
+            if (signal.HeatmapJson != null) b.Append(",\"heatmap\":").Append(signal.HeatmapJson);
+            return b.Append('}').ToString();
         }
 
         internal static string Quote(string text)

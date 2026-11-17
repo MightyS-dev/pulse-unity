@@ -1,5 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
+#import <objc/message.h>
+#import <dlfcn.h>
 
 extern "C" const char* MightysPulseBuildNumber()
 {
@@ -45,4 +48,38 @@ extern "C" int MightysPulseDarkMode()
 extern "C" int MightysPulseLowPower()
 {
     return [[NSProcessInfo processInfo] isLowPowerModeEnabled] ? 1 : 0;
+}
+
+// 0.9.7 AE1 permissions, read without ever asking the user.
+static volatile int mightysPulseNotificationStatus = -1;
+
+// Starts an asynchronous read of the notification permission; the answer lands in MightysPulseNotificationStatus.
+extern "C" void MightysPulseRefreshNotificationStatus()
+{
+    [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
+        mightysPulseNotificationStatus = (int)settings.authorizationStatus;
+    }];
+}
+
+// -1 while unknown, else UNAuthorizationStatus: 0 notDetermined, 1 denied, 2 authorized, 3 provisional, 4 ephemeral.
+extern "C" int MightysPulseNotificationStatus()
+{
+    return mightysPulseNotificationStatus;
+}
+
+// App Tracking Transparency status only (never the advertising identifier), without linking the framework: it is
+// opened at run time and the class is looked up by name, so an app without ATT, without the Info.plist usage key or on
+// iOS 13 simply gets -1. Else ATTrackingManagerAuthorizationStatus: 0 notDetermined, 1 restricted, 2 denied, 3 authorized.
+extern "C" int MightysPulseTrackingStatus()
+{
+    if (@available(iOS 14.0, *))
+    {
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ dlopen("/System/Library/Frameworks/AppTrackingTransparency.framework/AppTrackingTransparency", RTLD_LAZY); });
+        Class manager = NSClassFromString(@"ATTrackingManager");
+        SEL selector = NSSelectorFromString(@"trackingAuthorizationStatus");
+        if (manager == nil || ![manager respondsToSelector:selector]) return -1;
+        return (int)((NSUInteger (*)(id, SEL))objc_msgSend)(manager, selector);
+    }
+    return -1;
 }

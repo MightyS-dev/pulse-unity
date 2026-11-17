@@ -17,13 +17,20 @@ namespace Mightys.Pulse
         internal static UnityRequestShape For(TransportRequest request)
         {
             var shape = new UnityRequestShape { Method = request.IsGet ? "GET" : "POST", Body = request.IsGet ? null : request.Body };
+            if (request.IsControl)
+            {
+                // 0.9.7 App Control: a plain GET. No app key, no install id, no cookie, nothing that identifies the app or the user.
+                shape.Headers.Add(new KeyValuePair<string, string>("Accept", "application/json"));
+                if (!string.IsNullOrEmpty(request.IfNoneMatch)) shape.Headers.Add(new KeyValuePair<string, string>("If-None-Match", request.IfNoneMatch));
+                return shape;
+            }
             shape.Headers.Add(new KeyValuePair<string, string>("X-App-Key", request.AppKey));
             if (request.IsGet)
             {
                 if (!string.IsNullOrEmpty(request.IfNoneMatch)) shape.Headers.Add(new KeyValuePair<string, string>("If-None-Match", request.IfNoneMatch));
                 return shape;
             }
-            shape.Headers.Add(new KeyValuePair<string, string>("Content-Type", "application/json"));
+            shape.Headers.Add(new KeyValuePair<string, string>("Content-Type", request.ContentType ?? "application/json"));
             if (request.IsGzip) shape.Headers.Add(new KeyValuePair<string, string>("Content-Encoding", "gzip"));
             if (!string.IsNullOrEmpty(request.BatchId)) shape.Headers.Add(new KeyValuePair<string, string>("X-Pulse-Batch", request.BatchId));
             return shape;
@@ -39,7 +46,7 @@ namespace Mightys.Pulse
     internal sealed class ScreenHookGate
     {
         private volatile bool initialized;
-        private bool decided;
+        private bool resolved;
 
         // Called by the client factory, inside Pulse.Initialize.
         internal void Initialized() { initialized = true; }
@@ -47,8 +54,8 @@ namespace Mightys.Pulse
         // Main thread, every frame: true exactly once, when the hook should be installed now.
         internal bool TryDecide(Func<bool> enabled)
         {
-            if (decided || !initialized) return false;
-            decided = true;
+            if (resolved || !initialized) return false;
+            resolved = true;
             try { return enabled(); } catch (Exception) { return false; }
         }
     }

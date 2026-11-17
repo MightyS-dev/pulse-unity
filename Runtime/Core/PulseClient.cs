@@ -28,6 +28,8 @@ namespace Mightys.Pulse
         private readonly HashSet<string> systemKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly IExtraSystemFields extras;
         private readonly UsageTracker usage;
+        private bool coldStartHandled;
+        private long? launchMs;
         private readonly string appVersion, appBuild;
         private readonly Uri url, configUrl;
         private readonly SignalPolicy policy;
@@ -40,24 +42,60 @@ namespace Mightys.Pulse
         private Task worker = Task.CompletedTask;
         private CancellationTokenSource activeRequest;
         private Batch pending;
-        private bool loaded, optOut, preferenceExplicit, preferenceRead, preferenceDirty, gzipDisabled, halted, hasJournal;
+        private bool crashImported, loaded, optOut, preferenceExplicit, preferenceRead, preferenceDirty, gzipDisabled, halted, hasJournal;
         private long sequence, preferenceVersion;
         private double interval;
         private DateTimeOffset nextFlush, nextAttempt, pauseUntil, storageRetryUntil;
         internal string QueueName { get; }
+        internal string CrashName => QueueName + ".crash";
         internal string BatchName => QueueName + ".batch";
         private string PreferenceName => "opt-out";
         internal bool IsOptOut { get { lock (gate) return optOut; } }
         internal int Count { get { lock (gate) return queue.Count; } }
         /// <summary>What the cached portal settings and the options in code allow, fixed for this run.</summary>
         internal SignalPolicy Policy => policy;
+        /// <summary>Foreground counters, permission statuses and the quota guards of automatic signals.</summary>
+        internal AutoState Auto { get; }
+        /// <summary>Platform supplied time from process start to the first frame, in ms. Used on the cold start session_started.</summary>
+        internal void SetLaunchMs(long ms) { lock (gate) if (!coldStartHandled && ms >= 0) launchMs = ms; }
+        /// <summary>Where the platform cannot give a first frame time: called once, with the time of the first signal, for the cold start.</summary>
+        internal Func<DateTimeOffset, long?> LaunchProvider { get; set; }
         /// <summary>The settings request of this launch, or a completed task when none was started. Used by tests.</summary>
         internal Task ConfigFetch { get; private set; } = Task.CompletedTask;
+        /// <summary>the debug screenshot uploader (markers, retry and hourly rules).</summary>
+        internal HeatmapShots Shots { get; }
+        /// <summary>Called after a settings refresh of this run was applied, outside every lock. The runtime drops heatmap points when capture went off.</summary>
+        internal Action ConfigRefreshed { get; set; }
+        /// <summary>App Control of this app. Independent of the analytics opt-out and of the queue worker.</summary>
+        internal ControlClient Control { get; }
+
+        private static ControlContext ControlTemplate(IEnvironmentInfo environment, string appVersion)
+        {
+            string name = null;
+            try { (environment as IExtraSystemFields)?.StaticFields?.TryGetValue("appName", out name); } catch (Exception) { }
+            string ui = "";
+            try { ui = System.Globalization.CultureInfo.CurrentUICulture.Name; } catch (Exception) { }
+            return new ControlContext
+            {
+                Platform = ControlPlatform.FromOsName(environment.OsName), AppName = name ?? "", AppVersion = appVersion ?? "",
+                BundleId = environment.BundleId ?? "", Locales = LocalePreference(environment, ui)
+            };
+        }
+
+        // Language order for the screens: the platform language (when the environment supplies one), then the locale, then the UI culture.
+        internal static string[] LocalePreference(IEnvironmentInfo environment, string uiCulture)
+        {
+            string platform = null;
+            try { platform = (environment as IScreenLanguage)?.ScreenLanguage; } catch (Exception) { }
+            return new[] { platform, environment.Locale, uiCulture };
+        }
 
         internal PulseClient(string appKey, PulseOptions options, IClock clock, ITransport transport,
             IStorage storage, IEnvironmentInfo environment, Action<string> logger = null,
-            bool runWorker = true, Func<double> random = null, bool? initialOptOut = null, UsageTracker usage = null)
+            bool runWorker = true, Func<double> random = null, bool? initialOptOut = null, UsageTracker usage = null,
+            Func<DateTimeOffset, string> localDate = null, Func<bool> debugBuild = null)
         {
+            Auto = new AutoState(() => storage, localDate);
             this.appKey = appKey; this.options = options.Snapshot(); this.clock = clock;
             this.options.Debug = options.Debug;
             this.transport = transport; this.storage = storage; this.logger = logger;
@@ -70,6 +108,10 @@ namespace Mightys.Pulse
             appVersion = this.options.AppVersion ?? environment.AppVersion ?? ""; appBuild = environment.AppBuildNumber ?? "";
             url = new Uri(this.options.Host + "/api/v1/signals");
             configUrl = new Uri(this.options.Host + "/api/v1/config");
+            Shots = new HeatmapShots(() => storage, transport, appKey, this.options.Host, clock, appVersion,
+                debugBuild ?? (() => PulseInfo.DebugBuild), Warn);
+            Control = new ControlClient(appKey, this.options.Host, transport, storage, clock, ControlTemplate(environment, appVersion),
+                PulseInfo.SdkName + "@" + PulseInfo.Version, () => this.options.Debug, this.options.Control, Warn);
             QueueName = "queue-" + SignalJson.Hash(appKey) + ".bin";
             interval = this.options.FlushIntervalSeconds;
             nextFlush = clock.UtcNow.AddSeconds(interval);
@@ -103,19 +145,76 @@ namespace Mightys.Pulse
             {
                 if (optOut || lifetime.IsCancellationRequested) return;
                 var observation = usage?.Observe(input.SessionId, input.Timestamp, appVersion, appBuild, policy.Allows("pulse.app_updated"));
-                var systemJson = observation == null && dynamicFields == null ? system :
-                    SignalJson.SystemJsonFor(system, systemKeys, dynamicFields, observation?.Fields);
+                var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+                if (observation != null) foreach (var pair in observation.Fields) fields[pair.Key] = pair.Value;
+                Auto.Fill(fields, input.Timestamp);
+                var plain = fields.Count == 0 && dynamicFields == null ? system : SignalJson.SystemJsonFor(system, systemKeys, dynamicFields, fields);
+                // One signal's system object: the shared one, plus the dropped count the first admitted signal carries and,
+                // on the cold start session_started, the launch time.
+                string SystemFor(bool cold)
+                {
+                    // A heatmap signal never carries (and so never uses up) the dropped count.
+                    if (input.Type == RemoteConfig.HeatmapType) return plain;
+                    var dropped = Auto.TakeDropped();
+                    long? launch = cold ? ColdLaunch(input.Timestamp) : null;
+                    if (dropped == 0 && !launch.HasValue) return plain;
+                    var extra = new Dictionary<string, string>(fields, StringComparer.Ordinal);
+                    if (dropped > 0) extra["droppedAutomatic"] = dropped.ToString(CultureInfo.InvariantCulture);
+                    if (launch.HasValue) extra["launchMs"] = launch.Value.ToString(CultureInfo.InvariantCulture);
+                    return SignalJson.SystemJsonFor(system, systemKeys, dynamicFields, extra);
+                }
                 if (observation != null)
                     foreach (var auto in observation.Signals)
                     {
+                        // The first session_started of the process is the cold start, whether or not it is sent.
+                        var cold = auto.Type == "pulse.session_started" && !coldStartHandled;
+                        if (cold) coldStartHandled = true;
                         if (!policy.Allows(auto.Type)) continue;
-                        var own = new SignalInput { Type = auto.Type, PropsJson = auto.PropsJson ?? "{}", Timestamp = NextStamp(input.Timestamp),
+                        var stamp = NextStamp(input.Timestamp);
+                        if (!Auto.Admit(auto.Type, input.SessionId, stamp)) continue;
+                        var own = new SignalInput { Type = auto.Type, PropsJson = auto.PropsJson ?? "{}", Timestamp = stamp,
                             SessionId = input.SessionId, UserHash = input.UserHash };
-                        Add(own, SignalJson.Serialize(own, systemJson, options.Debug));
+                        Add(own, SignalJson.Serialize(own, SystemFor(cold), options.Debug, options.ErrorDetail));
                     }
                 if (policy.Allows(input.Type))
-                { input.Timestamp = NextStamp(input.Timestamp); Add(input, SignalJson.Serialize(input, systemJson, options.Debug)); }
+                {
+                    input.Timestamp = NextStamp(input.Timestamp);
+                    if (Auto.Admit(input.Type, input.SessionId, input.Timestamp))
+                        Add(input, SignalJson.Serialize(input, SystemFor(false), options.Debug, options.ErrorDetail));
+                }
                 Prune();
+            }
+            Pulse();
+        }
+
+        // The cold start is the first session_started of this process. The platform's time wins; otherwise the provider measures to this signal.
+        private long? ColdLaunch(DateTimeOffset firstSignal)
+        {
+            if (launchMs.HasValue) return launchMs;
+            try { var value = LaunchProvider?.Invoke(firstSignal); return value.HasValue && value.Value >= 0 ? value : null; }
+            catch (Exception) { return null; }
+        }
+
+        // A crash: the process may end right after this call, so the signal goes to its own small file at once and is
+        // sent at the next launch. Without a working disk it stays in the queue, which is the best that is left.
+        internal void EnqueueCrash(SignalInput input)
+        {
+            if (input == null) return;
+            IReadOnlyDictionary<string, string> dynamicFields = null;
+            try { dynamicFields = extras?.DynamicFields(); } catch (Exception) { }
+            lock (gate)
+            {
+                if (optOut || lifetime.IsCancellationRequested || !policy.Allows(input.Type)) return;
+                var systemJson = dynamicFields == null ? system : SignalJson.SystemJsonFor(system, systemKeys, dynamicFields, null);
+                input.Timestamp = NextStamp(input.Timestamp);
+                var json = SignalJson.Serialize(input, systemJson, options.Debug, options.ErrorDetail);
+                try
+                {
+                    var saved = QueueJournal.Decode(storage.Read(CrashName), 100);
+                    saved.Add(new QueueEntry { Id = Guid.NewGuid().ToString("N"), Json = json, Timestamp = input.Timestamp });
+                    storage.Replace(CrashName, QueueJournal.Encode(saved, 0, true));
+                }
+                catch (Exception) { Add(input, json); Warn("Crash could not be saved to disk; queued instead."); }
             }
             Pulse();
         }
@@ -142,7 +241,10 @@ namespace Mightys.Pulse
                 {
                     configEpoch++; configRequested = false; ForgetConfig();
                     try { usage?.Forget(); } catch (Exception) { }
+                    try { Auto.Forget(); } catch (Exception) { }
+                    try { Shots.Forget(); } catch (Exception) { }
                     queue.Clear();
+                    Task.Run(() => { try { storage.Delete(CrashName); } catch (Exception) { } });
                     try { activeRequest?.Cancel(); } catch (Exception) { }
                 }
             }
@@ -201,7 +303,9 @@ namespace Mightys.Pulse
                     lock (gate) { if (optOut || epoch != configEpoch || lifetime.IsCancellationRequested) return; }
                     try { storage.Replace(RemoteConfig.FileName, Encoding.UTF8.GetBytes(response.Body)); }
                     catch (Exception) { Warn("Settings could not be saved."); }
+                    policy.Live = parsed;
                 }
+                try { ConfigRefreshed?.Invoke(); } catch (Exception) { }
             }
             catch (Exception) { Warn("Settings request failed; cached settings kept."); }
         }
@@ -412,7 +516,17 @@ namespace Mightys.Pulse
                     }
                 }
             }
-            catch (Exception) { lock (gate) storageRetryUntil = clock.UtcNow.AddSeconds(1); Warn("Queue operation failed; retained data will be retried."); }
+            catch (Exception)
+            {
+                lock (gate)
+                {
+                    storageRetryUntil = clock.UtcNow.AddSeconds(1);
+                    // With unusable storage, a Flush that has nothing in memory to deliver must not wait for the disk.
+                    for (var i = waiters.Count - 1; i >= 0; i--)
+                        if (!queue.Any(e => e.Sequence <= waiters[i].Sequence)) { waiters[i].Completion.TrySetResult(true); waiters.RemoveAt(i); }
+                }
+                Warn("Queue operation failed; retained data will be retried.");
+            }
             finally { processing.Release(); }
         }
 
@@ -445,13 +559,18 @@ namespace Mightys.Pulse
             // Damaged records are dropped from the first invalid one onward; earlier records survive.
             var restored = QueueJournal.Decode(storage.Read(QueueName), options.MaxQueueSize, out var intact);
             if (!intact) Warn("Damaged queue tail discarded; earlier signals retained.");
+            byte[] crashBytes = null;
+            try { crashBytes = storage.Read(CrashName); } catch (Exception) { Warn("Saved crash file unreadable."); }
+            var crashed = QueueJournal.Decode(crashBytes, 100);
             lock (gate)
             {
                 if (!preferenceExplicit && !preferenceRead) optOut = StoredOptOut(preference);
                 preferenceRead = true;
-                if (optOut) queue.Clear();
+                if (optOut) { queue.Clear(); if (crashBytes != null) try { storage.Delete(CrashName); } catch (Exception) { } }
                 else
                 {
+                    // A crash saved by the last run is sent now, after the queue that was there before it.
+                    restored.AddRange(crashed); crashImported = crashBytes != null;
                     var newEntries = queue.ToArray(); queue.Clear();
                     queue.AddRange(restored); queue.AddRange(newEntries);
                     // Restored entries precede all current-process entries, including existing flush targets.
@@ -496,6 +615,8 @@ namespace Mightys.Pulse
             else if (entries.Length > persistedIds.Count)
                 storage.Append(QueueName, QueueJournal.Encode(entries, persistedIds.Count, false));
             persistedIds.Clear(); persistedIds.AddRange(entries.Select(e => e.Id)); hasJournal = true;
+            // The saved crashes are in the queue file now.
+            if (crashImported) { storage.Delete(CrashName); crashImported = false; }
             SavePending();
         }
 
@@ -629,6 +750,7 @@ namespace Mightys.Pulse
 
         internal async Task StopAsync()
         {
+            Control.Stop();
             lifetime.Cancel(); Pulse();
             try { await worker.ConfigureAwait(false); } catch (Exception) { }
             await processing.WaitAsync().ConfigureAwait(false);

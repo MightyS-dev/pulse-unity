@@ -14,7 +14,7 @@ namespace Mightys.Pulse
     // scheme, connection, low power mode) are read on the main thread by RefreshDynamic, which the lifecycle component calls
     // at start, on focus and every few seconds; DynamicFields only hands out the last snapshot, so it never touches Unity
     // APIs from the worker thread. Anything the platform cannot give is left out.
-    internal sealed class UnityEnvironmentInfo : IEnvironmentInfo, IExtraSystemFields
+    internal sealed class UnityEnvironmentInfo : IEnvironmentInfo, IScreenLanguage, IExtraSystemFields
     {
         private readonly Dictionary<string, string> staticFields = new Dictionary<string, string>(StringComparer.Ordinal);
         private Dictionary<string, string> snapshot = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -47,6 +47,8 @@ namespace Mightys.Pulse
         public string Locale { get; }
         public string BundleId { get; }
         public string SigningCertSha256 { get; }
+        // Application.systemLanguage mapped to a built-in screen language; the culture can be invariant on mobile players.
+        public string ScreenLanguage { get; }
 
         internal UnityEnvironmentInfo()
         {
@@ -68,6 +70,7 @@ namespace Mightys.Pulse
             DeviceModel = SystemInfo.deviceModel;
             Locale = CultureInfo.CurrentCulture.Name;
             BundleId = Application.identifier;
+            try { ScreenLanguage = UnityFieldRules.ScreenLanguage(Application.systemLanguage.ToString()); } catch (Exception) { ScreenLanguage = ""; }
             SigningCertSha256 = AndroidCertificate();
             mobile = Application.isMobilePlatform;
             scale = Safe(ScreenScale);
@@ -165,6 +168,9 @@ namespace Mightys.Pulse
             return false;
 #endif
         }
+
+        /// <summary>The system theme where the platform says it, otherwise null.</summary>
+        internal static bool? SystemDark() => DarkMode();
 
         private static bool? DarkMode()
         {

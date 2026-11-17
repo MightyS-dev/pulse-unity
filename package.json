@@ -1,16 +1,19 @@
 {
   "name": "dev.mightys.pulse",
-  "version": "0.9.5",
+  "version": "0.9.7",
   "displayName": "MightyS Pulse",
   "description": "Privacy-first analytics for Unity games and apps. Send named events with one call and see them in the MightyS Pulse dashboard. No advertising or device identifiers, an offline queue that survives restarts, built-in opt-out, no external dependencies.",
   "unity": "2022.3",
   "keywords": [ "analytics", "game analytics", "mobile analytics", "product analytics", "privacy", "privacy-first", "telemetry", "events", "event tracking", "offline", "opt-out" ],
-  "dependencies": { "com.unity.modules.androidjni": "1.0.0", "com.unity.modules.unitywebrequest": "1.0.0" },
+  "dependencies": { "com.unity.modules.androidjni": "1.0.0", "com.unity.modules.unitywebrequest": "1.0.0", "com.unity.modules.screencapture": "1.0.0", "com.unity.modules.imageconversion": "1.0.0" },
   "author": { "name": "MightyS Team", "email": "contact@mightys.dev", "url": "https://pulse.mightys.dev" },
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/MightyS-dev/pulse-unity.git" },
   "documentationUrl": "https://pulse.mightys.dev/docs/unity/",
   "changelogUrl": "https://github.com/MightyS-dev/pulse-unity/blob/main/CHANGELOG.md",
   "licensesUrl": "https://github.com/MightyS-dev/pulse-unity/blob/main/LICENSE.md",
-  "samples": [ { "displayName": "Basic", "description": "Three buttons for tracking and flushing.", "path": "Samples~/Basic" } ]
+  "samples": [
+    { "displayName": "Basic", "description": "Three buttons for tracking and flushing.", "path": "Samples~/Basic" },
+    { "displayName": "App Control demo", "description": "Shows every App Control screen without a server, in every built-in language and both themes.", "path": "Samples~/ControlDemo" }
+  ]
 }

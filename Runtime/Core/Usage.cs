@@ -244,7 +244,7 @@ namespace Mightys.Pulse
             return b.Append('}').ToString();
         }
 
-        // Called with the gate held. One writer at a time; a write always saves the newest state.
+        // Called with the lock held. One writer at a time; a write always saves the newest state.
         private void MarkDirty()
         {
             if (writeFailed) return;

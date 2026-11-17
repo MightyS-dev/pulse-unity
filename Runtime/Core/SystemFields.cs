@@ -37,7 +37,8 @@ namespace Mightys.Pulse
                 "language", "preferredLanguage", "region", "contentSizeCategory");
             Add(Kind.Int, "osApiLevel", "screenWidthPx", "screenHeightPx", "screenDpi", "screenCount", "utcOffsetMinutes",
                 "fontWeightAdjustment", "totalSessionsCount", "distinctDaysUsed", "distinctDaysUsedLastMonth",
-                "previousSessionSeconds", "averageSessionSeconds", "sessionSeconds");
+                "previousSessionSeconds", "averageSessionSeconds", "sessionSeconds", "foregroundsToday", "previousForegroundSeconds",
+                "launchMs", "droppedAutomatic");
             Add(Kind.Decimal, "screenWidth", "screenHeight", "screenScale", "fontScale");
             Add(Kind.Bool, "isSimulator", "isDebugBuild", "reduceMotion", "boldText", "invertColors", "increaseContrast",
                 "reduceTransparency", "differentiateWithoutColor", "lowPowerMode");
@@ -51,12 +52,17 @@ namespace Mightys.Pulse
             AddEnum("layoutDirection", "ltr", "rtl");
             AddEnum("connectionType", "wifi", "cellular", "ethernet", "none", "other");
             AddEnum("isNewInstall", "true");
+            AddEnum("notificationPermission", "granted", "denied", "notDetermined", "provisional", "ephemeral");
+            AddEnum("trackingPermission", "authorized", "denied", "restricted", "notDetermined");
             return rules;
         }
 
         // Fields the SDK computes itself from the usage file.
         internal static readonly string[] UsageKeys = { "isNewInstall", "firstSessionDate", "totalSessionsCount", "distinctDaysUsed",
-            "distinctDaysUsedLastMonth", "previousSessionSeconds", "averageSessionSeconds", "sessionSeconds" };
+            "distinctDaysUsedLastMonth", "previousSessionSeconds", "averageSessionSeconds", "sessionSeconds",
+            "foregroundsToday", "previousForegroundSeconds" };
+        // Fields the SDK sets itself from the automatic events; a platform never supplies them through the field hooks.
+        internal static readonly string[] AutoKeys = { "notificationPermission", "trackingPermission", "launchMs", "droppedAutomatic" };
 
         internal static IEnumerable<string> Keys => Rules.Keys;
 
