@@ -1,5 +1,14 @@
 namespace Mightys.Pulse
 {
+    internal static class LifecycleState
+    {
+        internal static bool FromPause(bool paused) => !paused;
+
+        // Mobile focus can change for a keyboard or permission prompt without the app going to the background.
+        internal static bool? FromFocus(bool focused, bool mobile, bool editor) =>
+            !mobile || editor ? focused : (bool?)null;
+    }
+
     // 0.9.7 AE1, Unity layer rules without UnityEngine (tested in Tests/Platform).
     //
     // Foreground and background: Unity raises OnApplicationFocus and OnApplicationPause for the same change, in an order

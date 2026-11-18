@@ -157,12 +157,12 @@ namespace Mightys.Pulse
             InFront(true);
         }
         private static void OnDeepLink(string url) { try { Pulse.DeepLink(url); } catch (Exception) { } }
-        private void InFront(bool inFront)
+        private void InFront(bool? inFront)
         {
-            if (!automaticReady) return;
+            if (!automaticReady || !inFront.HasValue) return;
             try
             {
-                var change = foreground.Set(inFront, out var coldStart);
+                var change = foreground.Set(inFront.Value, out var coldStart);
                 if (change == ForegroundTracker.Change.Foreground) { Pulse.ReportForeground(coldStart); ReadPermissions(); }
                 else if (change == ForegroundTracker.Change.Background) Pulse.ReportBackground();
             }
@@ -219,15 +219,19 @@ namespace Mightys.Pulse
             nextRefresh = Time.unscaledTime + RefreshSeconds;
             environment.RefreshDynamic();
         }
-        // One shared background flush with a deadline: repeated pause/focus events while offline do not pile up.
-        // On phones only pause and resume move the app between front and back (focus also drops for system dialogs and
-        // permission prompts); on desktop players and in the Editor focus does. Both go through the one tracker.
+        // Pause and resume move the app between front and back on every platform. Desktop players and the Editor also
+        // follow focus; mobile focus changes for system dialogs and permission prompts are ignored. One tracker removes
+        // repeated transitions. ReportBackground saves the session end, queues the signal and starts a bounded flush.
         // 0.9.7 App Control checks again when the app returns (at most once in 60 s, set by the core).
-        private void OnApplicationPause(bool paused) { if (Application.isMobilePlatform) InFront(!paused); if (paused) _ = Pulse.FlushInBackground(); else Pulse.Control.OnForeground(); }
+        private void OnApplicationPause(bool paused)
+        {
+            InFront(LifecycleState.FromPause(paused));
+            if (!paused) Pulse.Control.OnForeground();
+        }
         private void OnApplicationFocus(bool focused)
         {
-            if (!Application.isMobilePlatform) InFront(focused);
-            if (!focused) { _ = Pulse.FlushInBackground(); return; }
+            InFront(LifecycleState.FromFocus(focused, Application.isMobilePlatform, Application.isEditor));
+            if (!focused) return;
             Pulse.Control.OnForeground();
             environment?.RefreshDynamic(); nextRefresh = Time.unscaledTime + RefreshSeconds;
         }

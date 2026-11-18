@@ -121,6 +121,19 @@ namespace Mightys.Pulse
             return result;
         }
 
+        // Save the background moment even when the signal is suppressed or cannot be delivered.
+        // This never starts a session and bypasses the normal 30 second write coalescing interval.
+        internal void MoveSessionEnd(string sessionId, DateTimeOffset timestamp)
+        {
+            lock (gate)
+            {
+                EnsureLoaded();
+                if (currentId != sessionId || timestamp < last) return;
+                last = timestamp;
+                MarkDirty();
+            }
+        }
+
         private bool SafeNew() { try { return installIsNew == null || installIsNew(); } catch (Exception) { return false; } }
 
         private void Fill(Dictionary<string, string> fields, string sessionId, DateTimeOffset timestamp, string today)
@@ -206,7 +219,7 @@ namespace Mightys.Pulse
                     if (item is List<object> pair && pair.Count == 2 && pair[0] is string day && pair[1] is double sec)
                         completed.Add(new Done { Day = day, Seconds = (long)sec });
             if (firstDate == null) throw new FormatException("usage");
-            // A session that was running when the process ended counts as completed, up to its last signal.
+            // A session that was running when the process ended counts as completed, up to its saved end.
             if (root.TryGetValue("start", out var st) && st is double sd && root.TryGetValue("last", out var la) && la is double ld)
             {
                 start = DateTimeOffset.FromUnixTimeSeconds((long)sd); last = DateTimeOffset.FromUnixTimeSeconds((long)ld);

@@ -12,7 +12,7 @@ namespace Mightys.Pulse
         /// <summary>SDK identifier sent with each batch.</summary>
         public const string SdkName = "pulse-unity";
         /// <summary>SDK version.</summary>
-        public const string Version = "0.9.7";
+        public const string Version = "0.9.8";
         /// <summary>Default ingest host.</summary>
         public const string DefaultHost = "https://in.mightys.dev";
         internal static bool DebugBuild;

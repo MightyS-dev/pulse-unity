@@ -19,8 +19,8 @@ namespace Mightys.Pulse
             "pulse.session_started", "pulse.new_install", "pulse.app_updated", ScreenViewType,
             PermissionChangedType, DeepLinkType, AppOpenedType, AppBackgroundedType, HeatmapType
         };
-        // Sent only when the cached settings list them in enabledSignals (they make many signals).
-        internal static readonly string[] OptInTypes = { AppOpenedType, AppBackgroundedType };
+        // Sent only when the cached settings list the type in enabledSignals.
+        internal static readonly string[] OptInTypes = { AppOpenedType };
         private const int MaxListed = 64, MaxTypeLength = 200;
 
         // Group names and the system keys each one holds. bundleId and the base system keys belong to no group.

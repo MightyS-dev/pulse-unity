@@ -13,7 +13,13 @@ own startup code.
 In Unity, open Window > Package Manager > + > Add package from git URL and enter:
 
 ```text
-https://github.com/MightyS-dev/pulse-unity.git#0.9.7
+https://github.com/MightyS-dev/pulse-unity.git#0.9.8
+```
+
+Or add this line to the `dependencies` of `Packages/manifest.json` (the package name must be exactly `dev.mightys.pulse`):
+
+```json
+"dev.mightys.pulse": "https://github.com/MightyS-dev/pulse-unity.git#0.9.8"
 ```
 
 The part after `#` pins the version; change it to move to a newer release. Use Unity 2022.3 LTS or newer and the
@@ -35,6 +41,13 @@ own user id instead of the anonymous install id.
 
 Call `Initialize` once from your startup script. `Track` is thread safe. Public calls never throw into your game and
 never wait for disk or network. To try it without writing code, import the Basic sample from Package Manager.
+
+## See your first signal
+
+1. Sign in at [app.pulse.mightys.dev](https://app.pulse.mightys.dev) and open the app whose key you used.
+2. A debug or development build sends test data (see Test mode below). Turn on the **Test mode** switch in the bar
+   above the figures to see it; turn it off again for real users.
+3. Open **Live** in the app menu: signals appear there as they arrive. The Overview and the other screens follow shortly.
 
 ## What is sent and what is never sent
 
@@ -138,14 +151,15 @@ Automatic signals); the full list with what each one costs is at https://pulse.m
 
 | Signal or field | What it is | Default | Uses signals |
 | --- | --- | --- | --- |
-| `pulse.session_started`, `pulse.new_install`, `pulse.app_updated` | sessions, installs and updates | on | one per session, install or update |
+| `pulse.session_started`, `pulse.new_install`, `pulse.app_updated` | sessions, installs and updates | on | free (do not count toward your plan) |
 | `pulse.screen_view` | the active scene changed (see Screen views); carries `previousScreenSeconds` | on | one per scene change |
 | `launchMs` | time from engine start to the first frame, on the cold start `pulse.session_started` | on | no |
 | `foregroundsToday`, `previousForegroundSeconds` | how often and how long the app was in front | on | no |
 | `notificationPermission`, `trackingPermission` | the notification permission status (Android and iOS) and the iOS App Tracking Transparency status | on | no |
 | `pulse.permission_changed` | one of those statuses changed since the last launch | on | rarely |
 | `pulse.deep_link` | the app was opened by a link: scheme, host and path only | on | one per link |
-| `pulse.app_opened`, `pulse.app_backgrounded` | the app came to the front or went to the back | off | about five each per player a day |
+| `pulse.app_opened` | the app came to the front | off | free (does not count toward your plan) |
+| `pulse.app_backgrounded` | the app went to the background; carries `foregroundSeconds` and `sessionSeconds` | on | free (does not count toward your plan) |
 | `pulse.heatmap` | taps and clicks per screen, see Heatmaps; switch off with `PulseOptions.CaptureHeatmaps` | off | none (own allowance) |
 
 - Statuses are only read, never asked: the SDK never shows a permission prompt, and it reads the tracking status
@@ -153,11 +167,14 @@ Automatic signals); the full list with what each one costs is at https://pulse.m
   advertising identifier is never read.
 - Deep links come from `Application.deepLinkActivated` and, once at start, `Application.absoluteURL` on Android and
   iOS. The query, the fragment and every parameter except the three `utm_` campaign tags are never sent.
-- Front and back follow pause and resume on phones and focus on desktop, one report per real change.
+- Front and back follow pause and resume on every platform, and focus on desktop and in the editor, one report per real change.
+  Going to the background saves the session end and flushes the queue immediately. A background signal after 30 minutes
+  without a signal is dropped and never starts a session.
 - Caps on the device keep automatic signals cheap: per session at most 20 `pulse.app_opened` and
   `pulse.app_backgrounded`, 10 `pulse.deep_link`, 5 `pulse.permission_changed` and 100 `pulse.screen_view`, and at
   most 300 automatic signals per device and day. Your own signals are never capped. When the plan reaches 90%, the
-  portal can pause the opt-in signals and screen views until the next month.
+  portal can pause counted automatic signals and screen views until the next month. The five free lifecycle types
+  above do not count toward your plan; above 50 per app, user and UTC day they count like other signals.
 
 ## Heatmaps
 

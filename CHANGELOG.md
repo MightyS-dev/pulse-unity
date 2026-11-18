@@ -4,6 +4,12 @@ All notable changes to the Pulse Unity SDK (`dev.mightys.pulse`) are listed here
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the package uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-11-18
+
+### Changed
+
+- Session length: the SDK reports when the app goes to the background, so sessions show their real length. `pulse.app_backgrounded` is on by default and does not count toward your plan.
+
 ## [0.9.7] - 2026-11-17
 
 ### Added

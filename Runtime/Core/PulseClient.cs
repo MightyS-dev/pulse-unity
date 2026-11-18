@@ -40,6 +40,7 @@ namespace Mightys.Pulse
         private readonly Func<double> random;
         private readonly List<string> persistedIds = new List<string>();
         private Task worker = Task.CompletedTask;
+        private FlushWaiter backgroundWaiter;
         private CancellationTokenSource activeRequest;
         private Batch pending;
         private bool crashImported, loaded, optOut, preferenceExplicit, preferenceRead, preferenceDirty, gzipDisabled, halted, hasJournal;
@@ -56,6 +57,8 @@ namespace Mightys.Pulse
         internal SignalPolicy Policy => policy;
         /// <summary>Foreground counters, permission statuses and the quota guards of automatic signals.</summary>
         internal AutoState Auto { get; }
+        internal void MoveSessionEnd(string sessionId, DateTimeOffset timestamp) => usage?.MoveSessionEnd(sessionId, timestamp);
+        private Task UsageSaved => usage?.Idle ?? Task.CompletedTask;
         /// <summary>Platform supplied time from process start to the first frame, in ms. Used on the cold start session_started.</summary>
         internal void SetLaunchMs(long ms) { lock (gate) if (!coldStartHandled && ms >= 0) launchMs = ms; }
         /// <summary>Where the platform cannot give a first frame time: called once, with the time of the first signal, for the cold start.</summary>
@@ -310,7 +313,7 @@ namespace Mightys.Pulse
             catch (Exception) { Warn("Settings request failed; cached settings kept."); }
         }
 
-        internal Task FlushAsync(CancellationToken cancellationToken = default)
+        internal Task FlushAsync(CancellationToken cancellationToken = default, bool background = false)
         {
             if (cancellationToken.IsCancellationRequested) return Task.CompletedTask;
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -320,9 +323,23 @@ namespace Mightys.Pulse
                 // A stopped client has no worker left to complete a waiter.
                 if (lifetime.IsCancellationRequested) return Task.CompletedTask;
                 waiter.Sequence = sequence; waiters.Add(waiter);
+                if (background) backgroundWaiter = waiter;
             }
             Pulse();
             return AwaitWithoutThrow(waiter, cancellationToken);
+        }
+
+        // A later transition can add signals while an earlier background flush is still in flight.
+        // Keep the same bounded wait, but include the newly queued signals in its delivery target.
+        internal bool ExtendBackgroundFlush()
+        {
+            lock (gate)
+            {
+                if (backgroundWaiter == null || backgroundWaiter.Completion.Task.IsCompleted) return false;
+                backgroundWaiter.Sequence = sequence;
+            }
+            Pulse();
+            return true;
         }
 
         internal int WaiterCount { get { lock (gate) return waiters.Count; } }
@@ -398,6 +415,8 @@ namespace Mightys.Pulse
                 Load();
                 while (!lifetime.IsCancellationRequested)
                 {
+                    // Finish a queued session-end write before attempting delivery, even if that signal is lost.
+                    await UsageSaved.ConfigureAwait(false);
                     Persist();
                     Batch batch;
                     CancellationTokenSource requestCancellation;

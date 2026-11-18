@@ -346,7 +346,7 @@ namespace Mightys.Pulse
         }
 
         /// <summary>The app went to the background (a real transition; repeats are ignored). Stops the screen timer and sends
-        /// <c>pulse.app_backgrounded</c> with the seconds of the foreground period.</summary>
+        /// <c>pulse.app_backgrounded</c> with the seconds of the foreground period. Saves the session end and requests an immediate flush.</summary>
         internal void ReportBackground()
         {
             try
@@ -360,11 +360,13 @@ namespace Mightys.Pulse
                     if (lastScreen != null) screenAccumulated += now - screenSince;
                     foregroundState = 2;
                     var seconds = client.Auto.CurrentForegroundSeconds(now, createdAt);
+                    client.MoveSessionEnd(session, now);
                     // A background report never opens a session by itself: after the session timeout of silence the signal is a rule drop
                     // (not a quota drop, so it counts toward no cap and not as droppedAutomatic). The foreground counters still update.
                     if (lastActivity == DateTimeOffset.MinValue || now - lastActivity < SessionTimeout)
                         Track(RemoteConfig.AppBackgroundedType, null, new Dictionary<string, object> { ["foregroundSeconds"] = seconds });
                     client.Auto.NoteBackground(seconds);
+                    _ = FlushInBackground(TimeSpan.FromMinutes(1));
                 }
             }
             catch (Exception) { Warn("Background report failed."); }
@@ -470,9 +472,9 @@ namespace Mightys.Pulse
                 {
                     if (client == null) return Task.CompletedTask;
                     heatmap.Flush();
-                    if (backgroundFlush != null && !backgroundFlush.IsCompleted) return backgroundFlush;
+                    if (backgroundFlush != null && !backgroundFlush.IsCompleted && client.ExtendBackgroundFlush()) return backgroundFlush;
                     var cancellation = new CancellationTokenSource(deadline);
-                    backgroundFlush = client.FlushAsync(cancellation.Token).ContinueWith(_ => cancellation.Dispose(),
+                    backgroundFlush = client.FlushAsync(cancellation.Token, background: true).ContinueWith(_ => cancellation.Dispose(),
                         CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                     return backgroundFlush;
                 }
